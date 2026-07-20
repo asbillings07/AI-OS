@@ -13,6 +13,8 @@ export interface HttpAiProviderOptions {
   baseUrl?: string;
   /** Model name — an implementation detail that never leaks past this adapter. */
   model?: string;
+  /** Abort a request that stalls longer than this (ms). Defaults to 30s. */
+  timeoutMs?: number;
 }
 
 interface ChatResponse {
@@ -30,11 +32,13 @@ export class HttpAiProvider implements AiProvider {
   readonly #apiKey: string;
   readonly #baseUrl: string;
   readonly #model: string;
+  readonly #timeoutMs: number;
 
   constructor(options: HttpAiProviderOptions) {
     this.#apiKey = options.apiKey;
     this.#baseUrl = (options.baseUrl ?? "https://api.openai.com/v1").replace(/\/$/, "");
     this.#model = options.model ?? "gpt-4o-mini";
+    this.#timeoutMs = options.timeoutMs ?? 30_000;
   }
 
   async summarize(request: SummarizeRequest): Promise<SummarizeResult> {
@@ -55,23 +59,36 @@ export class HttpAiProvider implements AiProvider {
   }
 
   async #chat(system: string, user: string): Promise<string> {
-    const response = await fetch(`${this.#baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${this.#apiKey}`,
-      },
-      body: JSON.stringify({
-        model: this.#model,
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
-        temperature: 0,
-      }),
-    });
+    const url = `${this.#baseUrl}/chat/completions`;
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${this.#apiKey}`,
+        },
+        body: JSON.stringify({
+          model: this.#model,
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: user },
+          ],
+          temperature: 0,
+        }),
+        // Don't let a stalled connection hang the caller forever.
+        signal: AbortSignal.timeout(this.#timeoutMs),
+      });
+    } catch (error) {
+      if (error instanceof Error && error.name === "TimeoutError") {
+        throw new AiError(`AI provider request timed out after ${this.#timeoutMs}ms (${url})`);
+      }
+      throw error;
+    }
     if (!response.ok) {
-      throw new AiError(`AI provider request failed: ${response.status}`);
+      throw new AiError(
+        `AI provider request failed: ${response.status} ${response.statusText} (${url})`,
+      );
     }
     const data = (await response.json()) as ChatResponse;
     const content = data.choices?.[0]?.message?.content;

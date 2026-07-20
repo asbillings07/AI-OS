@@ -174,6 +174,29 @@ describe("Signal detection (deterministic)", () => {
     );
   });
 
+  it("resurfaces a snoozed thread immediately when a new inbound message arrives", () => {
+    const events = [
+      message({ threadId: "t1", messageId: "m1" }),
+      makeEvent({
+        type: EventTypes.WorkItemSnoozed,
+        source: "user",
+        payload: { workItemId: "w1", threadId: "t1", snoozedUntil: "2026-07-20T09:00:00.000Z" },
+      }),
+      // A reply lands well before the snooze window ends.
+      message({ threadId: "t1", messageId: "m2", body: "Bumping — any thoughts?", receivedAt: "2026-07-15T12:00:00.000Z" }),
+    ];
+    const context = events.reduce(
+      (state, event) => contextProjection.apply(state, event),
+      contextProjection.init(),
+    );
+    // Fresh activity overrides the defer (email-client-style un-snooze).
+    expect(context.threads.t1?.status).toBe("open");
+    expect(context.threads.t1?.snoozedUntil).toBeUndefined();
+    expect(detectSignals(context, "2026-07-15T13:00:00.000Z").map((s) => s.kind)).toContain(
+      "AwaitingReply",
+    );
+  });
+
   it("raises an Aging signal once a thread waits long enough", () => {
     const context = fold([message({ threadId: "t1", messageId: "m1", receivedAt: "2026-07-13T09:00:00.000Z" })]);
     const kinds = detectSignals(context, "2026-07-15T09:00:00.000Z").map((s) => s.kind);

@@ -105,6 +105,28 @@ describe("event backbone (ADR-0002, ADR-0008, ADR-0009)", () => {
     expect(host.state.total).toBe(1);
   });
 
+  it("serializes concurrent record() calls so delivery order is preserved", async () => {
+    const store = new SqliteEventStore(":memory:");
+    const bus = new InProcessEventBus();
+    const delivered: string[] = [];
+    // Descending delays: without serialization the later events would land first.
+    const delays: Record<string, number> = { a: 20, b: 15, c: 10, d: 5 };
+    bus.subscribe(async (event) => {
+      await new Promise((resolve) => setTimeout(resolve, delays[event.id] ?? 0));
+      delivered.push(event.id);
+    });
+    const runtime = new OrionRuntime({ bus, store });
+
+    const events = ["a", "b", "c", "d"].map((id) =>
+      makeEvent({ type: "MessageReceived", source: "gmail-skill", payload: {}, id }),
+    );
+    // Fire without awaiting between calls — simulates concurrent server actions.
+    await Promise.all(events.map((event) => runtime.record(event)));
+
+    expect(delivered).toEqual(["a", "b", "c", "d"]);
+    expect(store.count()).toBe(4);
+  });
+
   it("keeps the event durable when delivery fails, and rebuild() repairs the projection", async () => {
     // A subscriber that fails is registered BEFORE the projection, so on the
     // failing delivery the projection is never reached and is left stale.

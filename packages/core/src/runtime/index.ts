@@ -27,6 +27,8 @@ export class OrionRuntime {
   readonly #store: EventStore;
   readonly #projections: ReadonlyArray<ProjectionHost<unknown>>;
   readonly #subscriptions: Unsubscribe[] = [];
+  /** Tail of the record queue; serializes concurrent writers (see `record`). */
+  #recordQueue: Promise<unknown> = Promise.resolve();
 
   constructor(options: OrionRuntimeOptions) {
     this.#bus = options.bus;
@@ -58,8 +60,26 @@ export class OrionRuntime {
    *    projections may be left partially applied. The event stays on the log;
    *    a later `rebuild()` reconstructs consistent state from it. Consumers must
    *    therefore be idempotent (ADR-0008).
+   *  - **Serialized delivery.** The runtime is a shared singleton (e.g. across
+   *    Next.js server actions), so records are queued and processed one at a
+   *    time. Concurrent callers can never interleave append/publish, which keeps
+   *    the single-writer ordering ADR-0008 promises even if a subscriber awaits.
+   *    A failed record must not stall the queue, so the chain continues
+   *    regardless of any individual call's outcome.
    */
   async record(event: EventEnvelope): Promise<void> {
+    const result = this.#recordQueue.then(
+      () => this.#appendAndPublish(event),
+      () => this.#appendAndPublish(event),
+    );
+    this.#recordQueue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  async #appendAndPublish(event: EventEnvelope): Promise<void> {
     const isNew = this.#store.append(event);
     if (isNew) {
       await this.#bus.publish(event);
