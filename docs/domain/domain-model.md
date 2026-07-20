@@ -19,7 +19,7 @@ Every entity lives in one of three layers, and Orion's whole job is moving *up* 
      │  observed
      ▼
   UNDERSTANDING    "What does it mean?"   (Event, Observation, Context, Relationship,
-     │                                     Signal, Insight, Timeline, Memory, Opportunity)
+     │                                     Signal, Insight, Timeline, Memory, Opportunity, Capacity)
      │  reasoned
      ▼
   DECISION         "What should I do?"    (Work Item, Recommendation, Explanation, Decision,
@@ -67,7 +67,8 @@ Each entity lists its **responsibility** (what it's accountable for) and its **k
 - **Insight** — *Responsibility:* capture higher-order synthesis over time. *Relationships:* drawn from **Context** and the **Timeline**; surfaced in a **Briefing**.
 - **Timeline** — *Responsibility:* provide the temporal ordering of Events and Context. *Relationships:* orders **Events**; feeds **Insights** and historical reasoning.
 - **Memory** — *Responsibility:* retain Context/knowledge so understanding compounds. *Relationships:* persists **Context**; fed by **Knowledge Sources**; informs **Recommendations**.
-- **Opportunity** — *Responsibility:* flag a proactively-detected situation worth acting on ([#26](./README.md)). *Relationships:* a kind of **Signal**; raises a **Work Item**.
+- **Opportunity** — *Responsibility:* flag a proactively-detected situation worth acting on — *"is there value in acting?"* ([#26](./README.md)). *Relationships:* a kind of **Signal**; raises a **Work Item**; weighed against **Capacity** during prioritization.
+- **Capacity** — *Responsibility:* estimate how effectively the user can make progress *right now* — *"can the user act well right now?"* ([#10](./README.md)). *Relationships:* inferred from **Context**; an input to prioritization (distinct from **Opportunity**); it is an estimate, not the evidence behind it.
 
 ### Decision layer
 
@@ -104,6 +105,7 @@ The modeling questions from #17, answered with the entities above:
 - **How is Context accumulated over time?** Via **Memory** (persistence) and the **Timeline** (ordering). Context is never a snapshot — it's the running projection, always rebuildable from Events.
 - **When does Context produce an Opportunity?** When a **Signal** is forward-looking (something worth acting on *before* the user asks), it is classified as an **Opportunity** ([#26](./README.md)).
 - **How are Opportunities prioritized?** As **Work Items**, by the Prioritization Engine against the objective function — **Attention** ([ADR-0006](../adr/0006-attention-is-the-primary-resource.md), [#29](./README.md)).
+- **How does Capacity affect prioritization?** **Opportunity** says whether acting has value; **Capacity** says whether the user can act well *now*. The Prioritization Engine weighs both — alongside Commitment and Urgency — so a high-value item can wait for a better moment ([#10](./README.md), [#29](./README.md)).
 - **How do Goals relate to Tasks?** A **Goal** is an outcome; **Tasks** are units of work serving it; a **Work Item** is whatever Orion surfaces for attention, which may point at either.
 - **How do Skills consume and produce Events?** Skills consume **Context** (not raw events) and produce **Recommendations**/**Actions**; their effects and Orion's own **Observations** re-enter as **Events**.
 - **How does Memory influence decision-making?** **Memory** supplies durable **Context** and **Insights** to **Recommendations**, so past understanding shapes present advice.

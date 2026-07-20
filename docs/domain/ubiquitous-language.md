@@ -42,11 +42,15 @@ How Orion perceives, remembers, and reasons across time.
 - **Insight** — a higher-order, synthesized understanding drawn from Context over time (a pattern, trend, or conclusion), more durable and strategic than a single Signal.
 - **Timeline** — the ordered, temporal view of Events and Context — Orion's history laid out in time ([#27](./README.md)).
 - **Memory** — retained Context and knowledge that persists and stays queryable over time, so understanding compounds ([#31](./README.md)).
-- **Opportunity** — a proactively detected situation worth acting on before the user asks ([#26](./README.md)). A forward-looking kind of Signal.
+- **Opportunity** — a proactively detected situation worth acting on before the user asks ([#26](./README.md)). A forward-looking kind of Signal. Answers *"is there value in acting?"*
+- **Capacity** — Orion's current estimate of how effectively the user can make progress *right now*, inferred from Context ([#10](./README.md)). Answers *"can the user act well right now?"* Belongs to **Understanding** (Orion infers it, it is not stated); its *evidence* includes available time, focus depth, interruption risk, device, and connectivity, but Capacity is the estimate, not the evidence.
 - **Briefing** — a synthesized summary delivered to the user (e.g., the morning briefing in Mission Control) — the readable output of Context, Signals, and Work Items.
 
 > **Disambiguation — Observation vs Signal vs Insight.**
 > An **Observation** is a *noticing* (Orion saw a specific thing, recorded as an Event). A **Signal** is *significance* (a change/relationship in Context that may deserve attention). An **Insight** is *synthesis* (a higher-level understanding across many things over time). Rough flow: Observations & Events → Context → Signals → Insights.
+
+> **Disambiguation — Opportunity vs Capacity.**
+> **Opportunity** is about *the world* — is there value in acting? **Capacity** is about *the user* — can they act well right now? They are independent: a high-Opportunity item can still be low priority when Capacity is low. Renewing a passport has real value (high Opportunity), but not in the 15 minutes before a meeting (low Capacity). Prioritization weighs both, alongside Commitment and Urgency ([#29](./README.md)).
 
 ---
 

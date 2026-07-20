@@ -129,4 +129,4 @@ The very first time, Orion has no history and hasn't earned trust yet. So the fi
 - [Product Principles](../principles/product.md) (#8)
 - [Design Principles](../principles/design.md)
 - [MVP Definition](../roadmap/mvp.md) (#6)
-- Design the Context Engine (#25) — the machinery that makes this experience possible
+- [Understanding Engine](../architecture/understanding-engine.md) (#25) — the machinery that makes this experience possible

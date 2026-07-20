@@ -39,3 +39,7 @@ Skills and AI agents ask **"what should I know before helping the user?"** — t
 
 - **On-demand prompt assembly per skill**: rejected — shallow, inconsistent, non-reusable, no compounding.
 - **A vector store as "context"**: rejected as *sufficient* — retrieval is a mechanism, not the first-class, related, explainable context concept we need.
+
+---
+
+> **Terminology note (2026-07):** Subsequent documentation refers to the subsystem described here as the *Understanding Engine* (see [architecture](../architecture/understanding-engine.md)). This ADR's architectural decision is unchanged.
