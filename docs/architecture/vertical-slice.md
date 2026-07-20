@@ -67,7 +67,7 @@ npm run slice
 ## Running it
 
 ```bash
-npm install          # Node 20 (see .nvmrc)
+npm install          # Node 24 LTS (see .nvmrc)
 npm test             # deterministic; no network, no keys
 npm run slice        # the whole loop in the terminal
 npm --workspace @orion/mission-control run dev   # Mission Control at localhost:3000
