@@ -94,6 +94,66 @@ describe("Signal detection (deterministic)", () => {
     expect(detectSignals(context, "2026-07-16T12:00:00.000Z")).toHaveLength(0);
   });
 
+  it("reopens a handled thread when a new inbound message arrives", () => {
+    const events = [
+      message({ threadId: "t1", messageId: "m1" }),
+      makeEvent({
+        type: EventTypes.WorkItemActedOn,
+        source: "user",
+        payload: { workItemId: "w1", threadId: "t1" },
+      }),
+      message({ threadId: "t1", messageId: "m2", body: "Any update?", receivedAt: "2026-07-16T09:00:00.000Z" }),
+    ];
+    const context = events.reduce(
+      (state, event) => contextProjection.apply(state, event),
+      contextProjection.init(),
+    );
+    expect(context.threads.t1?.status).toBe("open");
+    expect(detectSignals(context, "2026-07-16T12:00:00.000Z").map((s) => s.kind)).toContain(
+      "AwaitingReply",
+    );
+  });
+
+  it("keeps a dismissed thread muted even when a new message arrives (durable mute)", () => {
+    const events = [
+      message({ threadId: "t1", messageId: "m1" }),
+      makeEvent({
+        type: EventTypes.WorkItemDismissed,
+        source: "user",
+        payload: { workItemId: "w1", threadId: "t1" },
+      }),
+      message({ threadId: "t1", messageId: "m2", body: "Still there?", receivedAt: "2026-07-16T09:00:00.000Z" }),
+    ];
+    const context = events.reduce(
+      (state, event) => contextProjection.apply(state, event),
+      contextProjection.init(),
+    );
+    expect(context.threads.t1?.status).toBe("dismissed");
+    expect(detectSignals(context, "2026-07-16T12:00:00.000Z")).toHaveLength(0);
+  });
+
+  it("clears snoozedUntil when a snoozed thread transitions to another status", () => {
+    const events = [
+      message({ threadId: "t1", messageId: "m1" }),
+      makeEvent({
+        type: EventTypes.WorkItemSnoozed,
+        source: "user",
+        payload: { workItemId: "w1", threadId: "t1", snoozedUntil: "2026-07-16T09:00:00.000Z" },
+      }),
+      makeEvent({
+        type: EventTypes.WorkItemActedOn,
+        source: "user",
+        payload: { workItemId: "w1", threadId: "t1" },
+      }),
+    ];
+    const context = events.reduce(
+      (state, event) => contextProjection.apply(state, event),
+      contextProjection.init(),
+    );
+    expect(context.threads.t1?.status).toBe("handled");
+    expect(context.threads.t1?.snoozedUntil).toBeUndefined();
+  });
+
   it("keeps a snoozed thread silent until snoozedUntil, then lets it resurface", () => {
     const received = message({ threadId: "t1", messageId: "m1" });
     const snoozed = makeEvent({

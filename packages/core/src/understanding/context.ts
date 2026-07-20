@@ -87,8 +87,12 @@ function applyMessageReceived(state: ContextState, event: EventEnvelope): Contex
         participants: [...participants],
         messages: [...existing.messages, message],
         lastReceivedAt: payload.receivedAt,
-        // A newer inbound message reopens a thread the user had put down.
+        // A new inbound message reopens a handled or snoozed thread the user had
+        // put down. Dismissed is a durable mute — the user said this isn't worth
+        // their attention — so it stays silent even if the conversation continues.
         status: existing.status === "dismissed" ? "dismissed" : "open",
+        // snoozedUntil is metadata for the snoozed status only; reopening clears it.
+        snoozedUntil: undefined,
       }
     : {
         threadId: payload.threadId,
@@ -132,8 +136,10 @@ function applyThreadStatus(
   if (!existing) {
     return state;
   }
+  // snoozedUntil is metadata for the snoozed status only. Clear it on any other
+  // transition so a stale snooze window never lingers on a handled/dismissed thread.
   const snoozedUntil =
-    status === "snoozed" ? (payload as WorkItemSnoozePayload).snoozedUntil : existing.snoozedUntil;
+    status === "snoozed" ? (payload as WorkItemSnoozePayload).snoozedUntil : undefined;
   return {
     ...state,
     threads: {

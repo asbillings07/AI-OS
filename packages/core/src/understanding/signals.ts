@@ -40,8 +40,9 @@ function threadEventIds(thread: ThreadContext): string[] {
 /**
  * Whether a thread is currently actionable. Open threads always are. A snoozed
  * thread resurfaces once its snooze window has passed — otherwise a snooze would
- * silence a conversation forever, not just defer it. Handled and dismissed
- * threads stay quiet until a new inbound message reopens them.
+ * silence a conversation forever, not just defer it. A handled thread stays quiet
+ * until a new inbound message reopens it. Dismissed is a durable mute: it stays
+ * silent even if the conversation continues (see context.ts applyMessageReceived).
  */
 function isActionable(thread: ThreadContext, now: string): boolean {
   switch (thread.status) {
