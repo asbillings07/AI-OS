@@ -68,7 +68,10 @@ export class LiveGmailSource implements GmailSource {
       headers: { authorization: `Bearer ${this.#options.accessToken}` },
     });
     if (!response.ok) {
-      throw new Error(`Gmail API request failed: ${response.status}`);
+      // Include status text and the URL so OAuth/query failures are actionable.
+      throw new Error(
+        `Gmail API request failed: ${response.status} ${response.statusText} (${url})`,
+      );
     }
     return response.json();
   }

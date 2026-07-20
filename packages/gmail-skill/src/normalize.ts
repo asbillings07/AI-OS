@@ -19,10 +19,34 @@ export function parseAddress(raw: string): EmailAddress {
   return { address: raw.trim().toLowerCase() };
 }
 
+/**
+ * Split an address-list header on commas that are NOT inside a quoted display
+ * name. A plain `split(",")` corrupts common forms like
+ * `"Doe, John" <john@example.com>`, which would otherwise add a bogus "doe"
+ * participant and skew relationship/signal detection.
+ */
+function splitAddressList(raw: string): string[] {
+  const parts: string[] = [];
+  let current = "";
+  let inQuotes = false;
+  for (const char of raw) {
+    if (char === '"') {
+      inQuotes = !inQuotes;
+      current += char;
+    } else if (char === "," && !inQuotes) {
+      parts.push(current);
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  parts.push(current);
+  return parts;
+}
+
 function parseAddressList(raw: string | undefined): EmailAddress[] {
   if (!raw) return [];
-  return raw
-    .split(",")
+  return splitAddressList(raw)
     .map((part) => part.trim())
     .filter((part) => part.length > 0)
     .map(parseAddress);

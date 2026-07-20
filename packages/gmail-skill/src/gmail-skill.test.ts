@@ -9,6 +9,7 @@ import {
   type ContextState,
 } from "@orion/core";
 import { gmailMessages } from "@orion/fixtures";
+import type { RawGmailMessage } from "@orion/fixtures";
 import { normalizeGmailMessage, parseAddress } from "./normalize.js";
 import { GmailSkill } from "./skill.js";
 import { FixtureGmailSource } from "./source.js";
@@ -19,6 +20,29 @@ describe("Gmail normalization (Eng #8: the vendor shape stops here)", () => {
   it("parses 'Name <email>' addresses", () => {
     expect(parseAddress("Dana Lee <dana@acme.com>")).toEqual({ name: "Dana Lee", address: "dana@acme.com" });
     expect(parseAddress("bare@example.com")).toEqual({ address: "bare@example.com" });
+  });
+
+  it("splits the To header without breaking quoted display names", () => {
+    const raw: RawGmailMessage = {
+      id: "g-multi",
+      threadId: "th-multi",
+      snippet: "hello",
+      internalDate: "1752415200000",
+      payload: {
+        mimeType: "text/plain",
+        headers: [
+          { name: "From", value: "Dana Lee <dana@acme.com>" },
+          { name: "To", value: '"Doe, John" <john@example.com>, jane@example.com' },
+          { name: "Subject", value: "Team sync" },
+        ],
+      },
+    };
+    const payload = normalizeGmailMessage(raw);
+    // A naive split(",") would produce a bogus "doe" recipient.
+    expect(payload.to).toEqual([
+      { name: "Doe, John", address: "john@example.com" },
+      { address: "jane@example.com" },
+    ]);
   });
 
   it("decodes the base64url body and maps headers to domain fields", () => {
