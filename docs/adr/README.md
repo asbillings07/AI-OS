@@ -49,11 +49,17 @@ Implementation ADRs (database, framework, hosting, AI provider, event bus, stora
 
 **The durability test — what deserves an ADR:** *If the decision would still matter after replacing every technology in the stack, it probably deserves an ADR.* The six foundational ADRs pass this trivially (they never mention a vendor). Most day-to-day technology choices (Redis, a CSS framework, a logging library, CI details) do **not** — capture those in code, comments, or an issue. Reserve ADRs for decisions whose *reasoning* must outlive the tools.
 
-The technology decisions already scoped as issues become ADRs `0007+` when their time comes:
+These establish *how Orion is built*. Each records a **durable, vendor-agnostic stance** — none picks a specific database, broker, or model provider, because those fail the durability test and are deferred until reality forces them ([Eng #12](../principles/engineering.md)):
 
-- Event-Driven Architecture (#20), Event Bus (#21), Storage Strategy (#22), Skill Architecture (#23), AI Abstraction Layer (#24).
+| ADR | Decision | Status |
+|---|---|---|
+| [0007](./0007-event-driven-architecture.md) | Event-Driven Architecture | Accepted |
+| [0008](./0008-event-bus.md) | The Event Bus (one canonical, replayable pub/sub channel) | Accepted |
+| [0009](./0009-storage-strategy.md) | Storage Strategy (events are the source of truth; the rest is projection) | Accepted |
+| [0010](./0010-skill-architecture.md) | Skill Architecture (extend via events and Context, never the core) | Accepted |
+| [0011](./0011-ai-abstraction-layer.md) | AI Abstraction Layer (ask for capabilities, not providers) | Accepted |
 
-(Note: some GitHub issue titles use provisional labels like "ADR-002: Event Bus." Those labels predate this numbering scheme; the canonical ids are assigned here when the ADR is written.)
+(Note: some GitHub issue titles use provisional labels like "ADR-002: Event Bus." Those labels predate this numbering scheme; the canonical ids are assigned here when the ADR is written — e.g. issue #21 became ADR-0008.)
 
 ## How to write an ADR
 
