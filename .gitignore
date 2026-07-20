@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Next.js
+apps/**/.next/
+apps/**/out/
+
+# Local data (append-only event log, rebuilt projections)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.data/
+
+# Secrets — never commit (ADR-0010: Skills own their own credentials)
+.env
+.env.local
+*.secret.json
+gmail-credentials.json
+gmail-token.json
+
+# Editor / OS
+.DS_Store
+*.log
