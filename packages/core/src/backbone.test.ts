@@ -87,4 +87,54 @@ describe("event backbone (ADR-0002, ADR-0008, ADR-0009)", () => {
     expect(Object.isFrozen(event)).toBe(true);
     expect(Object.isFrozen(event.payload)).toBe(true);
   });
+
+  it("does not re-deliver a duplicate event (delivery idempotency, not just storage)", async () => {
+    const { runtime, host, store } = newRuntime();
+    const event = makeEvent({
+      type: "MessageReceived",
+      source: "gmail-skill",
+      payload: {},
+      id: "dup-1",
+    });
+
+    await runtime.record(event);
+    await runtime.record(event); // same id again — a re-delivered fact
+
+    // Stored once AND delivered once: the projection is not double-applied.
+    expect(store.count()).toBe(1);
+    expect(host.state.total).toBe(1);
+  });
+
+  it("keeps the event durable when delivery fails, and rebuild() repairs the projection", async () => {
+    // A subscriber that fails is registered BEFORE the projection, so on the
+    // failing delivery the projection is never reached and is left stale.
+    const bus = new InProcessEventBus();
+    let failing = true;
+    const unsubscribe = bus.subscribe(() => {
+      if (failing) throw new Error("delivery boom");
+    });
+    const store = new SqliteEventStore(":memory:");
+    const host = new ProjectionHost(countingProjection);
+    const runtime = new OrionRuntime({
+      bus,
+      store,
+      projections: [host as ProjectionHost<unknown>],
+    });
+
+    const event = makeEvent({ type: "MessageReceived", source: "gmail-skill", payload: {} });
+
+    // record() rejects because delivery threw...
+    await expect(runtime.record(event)).rejects.toThrow("delivery boom");
+    // ...but the event is already durably committed (log is truth)...
+    expect(store.count()).toBe(1);
+    // ...and the projection is stale: it never received the event.
+    expect(host.state.total).toBe(0);
+
+    // Recovery: with delivery healthy again, rebuild() reconstructs consistent
+    // state from the log alone.
+    failing = false;
+    unsubscribe();
+    await runtime.rebuild();
+    expect(host.state.total).toBe(1);
+  });
 });

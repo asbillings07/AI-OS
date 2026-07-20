@@ -7,8 +7,13 @@ import { deepFreeze, type EventEnvelope } from "../events/index.js";
  * deleted — only appended and read in order.
  */
 export interface EventStore {
-  /** Append an event. Idempotent by event id (ADR-0008: at-least-once, dedupe). */
-  append(event: EventEnvelope): void;
+  /**
+   * Append an event. Idempotent by event id (ADR-0008: at-least-once, dedupe).
+   * Returns `true` if this call newly inserted the event, `false` if it was a
+   * duplicate that was ignored. Callers use this to avoid re-delivering a fact
+   * that is already on the log (storage idempotency is not delivery idempotency).
+   */
+  append(event: EventEnvelope): boolean;
   /** All events in the order they were recorded. */
   readAll(): EventEnvelope[];
   /** Number of events currently stored. */
@@ -72,8 +77,9 @@ export class SqliteEventStore implements EventStore {
     this.#countStmt = this.#db.prepare(`SELECT COUNT(*) AS n FROM events`);
   }
 
-  append(event: EventEnvelope): void {
-    this.#insert.run({
+  append(event: EventEnvelope): boolean {
+    // INSERT OR IGNORE reports 0 changed rows when the id already exists.
+    const result = this.#insert.run({
       id: event.id,
       type: event.type,
       occurredAt: event.occurredAt,
@@ -83,6 +89,7 @@ export class SqliteEventStore implements EventStore {
       causationId: event.causationId,
       payload: JSON.stringify(event.payload),
     });
+    return result.changes > 0;
   }
 
   readAll(): EventEnvelope[] {

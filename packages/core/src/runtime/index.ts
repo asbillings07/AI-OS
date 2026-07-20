@@ -45,10 +45,25 @@ export class OrionRuntime {
     return this.#store;
   }
 
-  /** Persist a new fact, then deliver it live. Order matters: log is truth. */
+  /**
+   * Persist a new fact, then deliver it live. The contract:
+   *
+   *  - **Delivery idempotency.** Appending is idempotent by event id, and a
+   *    duplicate is *not* re-delivered — storage idempotency alone would still
+   *    let projections double-apply, so we publish only when the append newly
+   *    inserted the event.
+   *  - **Durable-append, then publish.** The log is the source of truth, so the
+   *    event is committed before delivery. If a subscriber throws, `publish`
+   *    rejects and `record` rejects *after* the event is already durable, and
+   *    projections may be left partially applied. The event stays on the log;
+   *    a later `rebuild()` reconstructs consistent state from it. Consumers must
+   *    therefore be idempotent (ADR-0008).
+   */
   async record(event: EventEnvelope): Promise<void> {
-    this.#store.append(event);
-    await this.#bus.publish(event);
+    const isNew = this.#store.append(event);
+    if (isNew) {
+      await this.#bus.publish(event);
+    }
   }
 
   /** Rebuild every projection from the log alone. */
