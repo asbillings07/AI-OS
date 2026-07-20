@@ -65,10 +65,11 @@ The remaining concepts get the same treatment as the domain-modeling issues land
 
 The README introduces; individual documents become the authority:
 
-- `mental-model.md` — the canonical loop (the mental model for everyone joining).
-- `domain-model.md` — the concepts and their four-question definitions (#17, #4).
-- `lifecycle.md` — event and work-item lifecycles (#5).
-- `relationships.md` — how concepts relate (when relationships become first-class).
+- [`mental-model.md`](./mental-model.md) — the canonical loop (the mental model for everyone joining).
+- [`ubiquitous-language.md`](./ubiquitous-language.md) — the canonical glossary: one definition per concept (#16).
+- [`domain-model.md`](./domain-model.md) — the entities, responsibilities, and relationships (#17, #4).
+- [`event-lifecycle.md`](./event-lifecycle.md) — how an Event (and the Work Item it raises) moves through the system (#5).
+- `relationships.md` — deeper relationship modeling (when relationships become first-class).
 
 ## Related ADRs
 
