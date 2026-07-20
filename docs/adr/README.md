@@ -61,6 +61,37 @@ These establish *how Orion is built*. Each records a **durable, vendor-agnostic 
 
 (Note: some GitHub issue titles use provisional labels like "ADR-002: Event Bus." Those labels predate this numbering scheme; the canonical ids are assigned here when the ADR is written — e.g. issue #21 became ADR-0008.)
 
+## Decision dependency graph
+
+How the accepted decisions build on one another — philosophy at the top, technology stances below. An arrow means "rests on":
+
+```
+                 0001 Situational awareness (what Orion is)
+                          │
+   ┌──────────────┬───────┼───────────────┬───────────────┐
+   ▼              ▼       ▼               ▼               ▼
+0002 Events   0003 Work  0004 AI advises 0005 Context   0006 Attention
+   │           Item      / Rules decide  first-class     is primary
+   │              │           │               │               │
+   ▼              │           │               │               │
+0007 Event-driven architecture              │               │
+   │                                          │               │
+   ▼                                          │               │
+0008 Event Bus                                │               │
+   │                                          │               │
+   ▼                                          │               │
+0009 Storage strategy                         │               │
+   │                                          │               │
+   └───────────────┬──────────────────────────┘               │
+                   ▼                                            │
+             0010 Skill architecture  ◀── 0004, 0005           │
+                   │                                            │
+                   ▼                                            │
+             0011 AI abstraction layer ◀── 0004, 0005, and the attention objective (0006)
+```
+
+Read top-down for onboarding: the philosophy ADRs (0001–0006) fix *how Orion thinks*; the technology ADRs (0007–0011) fix *how it is built*, each a consequence of the philosophy above it.
+
 ## How to write an ADR
 
 1. Copy [`TEMPLATE.md`](./TEMPLATE.md) to `NNNN-your-title.md` using the next free number.
