@@ -72,6 +72,10 @@ export async function readMissionControl(): Promise<MissionControlView> {
   const now = new Date().toISOString();
   const items = buildWorkItems(context.state, now);
 
+  // Follow-up (not in v0.1): live-provider summaries are recomputed per render.
+  // Before enabling live AI by default, persist or cache advisory summaries by
+  // immutable source event plus summarization-policy version. Negligible with
+  // the deterministic default; a cost/latency surprise with a real provider.
   const enriched = await Promise.all(
     items.map(async (item): Promise<WorkItem> => {
       const thread = context.state.threads[item.threadId];
@@ -98,37 +102,58 @@ export async function readMissionControl(): Promise<MissionControlView> {
   };
 }
 
-export type WorkItemAction = "acted" | "snoozed" | "dismissed";
+export const WORK_ITEM_ACTIONS = ["acted", "snoozed", "dismissed"] as const;
+export type WorkItemAction = (typeof WORK_ITEM_ACTIONS)[number];
 
 /**
  * Record a user's decision as a new Event. This closes the loop: the event
  * updates Context, which changes prioritization on the next read (ADR-0002,
  * ADR-0005, ADR-0007, ADR-0008, ADR-0009 all at once).
+ *
+ * The trust boundary is here: we resolve the Work Item against what is actually
+ * surfaced right now and verify both ids before writing anything. A forged or
+ * stale id records nothing (never pollute the immutable log with unverified
+ * user events) and returns false. Duplicate submissions are intentionally
+ * benign: once acted/snoozed/dismissed, the thread is no longer surfaced, so a
+ * repeat submit simply resolves to nothing and no-ops.
+ *
+ * Returns whether an event was recorded.
  */
 export async function recordAction(
   workItemId: string,
   threadId: string,
   action: WorkItemAction,
-): Promise<void> {
-  const { runtime } = await getService();
+): Promise<boolean> {
+  const { runtime, context } = await getService();
 
-  if (action === "snoozed") {
-    const snoozedUntil = new Date(Date.now() + 24 * 3_600_000).toISOString();
-    await runtime.record(
-      makeEvent({
-        type: EventTypes.WorkItemSnoozed,
-        source: "user",
-        payload: { workItemId, threadId, snoozedUntil },
-      }),
-    );
-    return;
+  const surfaced = buildWorkItems(context.state, new Date().toISOString()).find(
+    (item) => item.id === workItemId && item.threadId === threadId,
+  );
+  if (!surfaced) {
+    return false;
   }
 
-  await runtime.record(
-    makeEvent({
-      type: action === "acted" ? EventTypes.WorkItemActedOn : EventTypes.WorkItemDismissed,
-      source: "user",
-      payload: { workItemId, threadId },
-    }),
-  );
+  switch (action) {
+    case "acted":
+      await runtime.record(
+        makeEvent({ type: EventTypes.WorkItemActedOn, source: "user", payload: { workItemId, threadId } }),
+      );
+      return true;
+    case "dismissed":
+      await runtime.record(
+        makeEvent({ type: EventTypes.WorkItemDismissed, source: "user", payload: { workItemId, threadId } }),
+      );
+      return true;
+    case "snoozed": {
+      const snoozedUntil = new Date(Date.now() + 24 * 3_600_000).toISOString();
+      await runtime.record(
+        makeEvent({
+          type: EventTypes.WorkItemSnoozed,
+          source: "user",
+          payload: { workItemId, threadId, snoozedUntil },
+        }),
+      );
+      return true;
+    }
+  }
 }

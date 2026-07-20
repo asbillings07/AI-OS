@@ -12,7 +12,7 @@ It runs with **no API key and no network**: Gmail is fixtures-first, and the def
 | ADR | How this slice proves it |
 | --- | --- |
 | [0002](../adr/0002-everything-is-an-event.md) Everything is an Event | Every fact — inbound message, user action — is an immutable, frozen Event |
-| [0007](../adr/0007-event-driven-architecture.md) Event-driven | Components never call each other; they react to events |
+| [0007](../adr/0007-event-driven-architecture.md) Event-driven | Components cooperate *across boundaries* by reacting to events, not by calling each other; ordinary function calls remain fine *within* a bounded component |
 | [0008](../adr/0008-event-bus.md) Event Bus | One in-process bus; `publish`/`subscribe`/`replay` deliver identically |
 | [0009](../adr/0009-storage-strategy.md) Storage | SQLite append-only log is the only source of truth; Context is a rebuildable projection |
 | [0005](../adr/0005-context-is-a-first-class-domain-object.md) Context first-class | Context is derived from events, queried independently of any prompt |
@@ -74,6 +74,13 @@ npm --workspace @orion/mission-control run dev   # Mission Control at localhost:
 ```
 
 To use a real model instead of the deterministic stub, set `ORION_AI_API_KEY` (and optionally `ORION_AI_BASE_URL`, `ORION_AI_MODEL`); everything else is unchanged, which is the whole point of [ADR-0011](../adr/0011-ai-abstraction-layer.md).
+
+## Recorded follow-ups (so they aren't lost)
+
+These are deliberate v0.1 limitations with clear future triggers, not defects:
+
+- **Record Orion's Observations when Timeline lands.** Signals and Opportunities are *derived on read* today (they are interpretations, not external facts). But [`timeline.md`](./timeline.md) already anticipates recording "an Opportunity detected… a recommendation made" as marked, confidence-carrying history. When the Timeline is implemented, `OpportunityDetected` (already reserved in `EventTypes`) should be **emitted** as an Orion Observation, so history can answer "what did Orion conclude then?", not only "why is this here now?".
+- **Cache advisory summaries before enabling live AI by default.** Live-provider summaries are recomputed per render in v0.1. Before enabling live AI by default, persist or cache advisory summaries by immutable source event plus summarization-policy version. (Negligible with the deterministic default; a cost/latency surprise with a real provider.)
 
 ## Deliberately out of scope
 
