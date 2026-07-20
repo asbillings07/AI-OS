@@ -1,0 +1,12 @@
+{
+  "name": "@orion/fixtures",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Replayable sample data (fixtures-first) for key-free, deterministic runs.",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

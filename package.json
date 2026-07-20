@@ -1,0 +1,26 @@
+{
+  "name": "orion",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Orion — a personal operating system for attention. First vertical slice (#18).",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "slice": "tsx scripts/run-slice.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.4.0"
+  },
+  "engines": {
+    "node": ">=18.16"
+  }
+}

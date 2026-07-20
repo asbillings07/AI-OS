@@ -6,6 +6,8 @@ Mission Control exists so you can spend less time deciding what to do, and more 
 
 Orion is a personal operating system that serves as the intelligence layer for your digital life. It turns the constant stream of signals from your tools — email, calendar, code, messages, and more — into a small number of clear, explained decisions, and tells you what can safely wait.
 
+> **The purpose of v0.1 is architectural validation, not features.** Every proposed change is measured against a single question: *does it validate the architecture?* If not, it waits. This keeps the first vertical slice ([#18](docs/architecture/vertical-slice.md)) honest — one complete loop that exercises every ADR, rather than a pile of half-connected features.
+
 ## Living Documents
 
 Orion's documentation is a product artifact, not an afterthought — it preserves the *reasoning* behind the system as it evolves. These are living documents: they are meant to be **referenced while building**, and to evolve alongside the software.
@@ -22,6 +24,37 @@ The governing documents (the stable core):
 - [MVP Definition](./docs/roadmap/mvp.md) — exactly what v0.1 is (and isn't)
 
 Faster-moving documentation lives in [`/docs/adr`](./docs/adr), [`/docs/domain`](./docs/domain), [`/docs/architecture`](./docs/architecture), [`/docs/roadmap`](./docs/roadmap), and [`/docs/scenarios`](./docs/scenarios), and must stay aligned with the governing documents above.
+
+## Implementation
+
+Orion is a TypeScript monorepo (npm workspaces), structured to grow into `apps` and `packages`:
+
+```
+apps/
+  mission-control/     # Next.js — the calm attention dashboard
+packages/
+  core/                # framework-free domain + engine (the permanent part, Eng #8)
+    events/            #   the immutable Event envelope (ADR-0002)
+    bus/               #   in-process Event Bus: publish / subscribe / replay (ADR-0008)
+    store/             #   SQLite append-only log + projections (ADR-0009)
+    understanding/     #   Context + Signals — the Understanding Engine (ADR-0005)
+    opportunity/       #   Opportunity Detection (#26)
+    capacity/          #   Capacity (#10)
+    prioritization/    #   ranked, explained Work Items (#29)
+  ai/                  # AI capability layer: ask for capabilities, not providers (ADR-0011)
+  gmail-skill/         # the first Skill (ADR-0010) — email in, domain events out
+  fixtures/            # replayable sample data for key-free, deterministic runs
+```
+
+Getting started:
+
+```bash
+npm install
+npm run typecheck
+npm test
+```
+
+The whole slice runs with no API keys and no network: Gmail is fixtures-first and the default AI is a deterministic stub. See [the vertical-slice walk-through](docs/architecture/vertical-slice.md) for how a message flows all the way to Mission Control and back.
 
 ## Contributing
 

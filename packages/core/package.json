@@ -1,0 +1,18 @@
+{
+  "name": "@orion/core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Orion's framework-free domain and engine. The permanent part (Eng #8).",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0"
+  }
+}
