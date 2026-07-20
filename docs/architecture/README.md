@@ -30,6 +30,7 @@ It turns the raw event stream into meaning. Its documents, in reading order:
 - **Reasoning model** — the conceptual pipeline: Raw Events → Normalized Events → Context → Signals → Understanding → Priorities → Recommendations → Actions. (May live here or at `docs/reasoning-model.md`.)
 - **Event flow & adapters** — how sources are ingested behind replaceable adapters (#8 engineering principle).
 - **Understanding & confidence** — reasoning about uncertainty, confidence, and conflicting or missing signals. (Deferred; the seam is visible but out of scope for the first Understanding Engine pass.)
+- **Hypothesis (in reserve)** — a possible first-class layer for *tentative* interpretations between Context and Opportunity, so inferences carry evidence before being promoted (Event → Context → Hypothesis → Evidence → Opportunity). Not planned yet; recorded so the idea isn't lost.
 
 ## Related ADRs
 
