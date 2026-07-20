@@ -69,7 +69,7 @@ Because the Event log is append-only, **every downstream stage is a projection**
 ## Why this influences almost every feature
 
 - **Ingestion** (e.g., the v0.1 Gmail adapter, [MVP](../roadmap/mvp.md)) implements Detected → Normalized → Enriched.
-- **The Context Engine** (#25) consumes persisted Events and maintains Context/Signals.
+- **The Understanding Engine** (#25) consumes persisted Events and maintains Context/Signals.
 - **Prioritization** (#29) and **Mission Control** operate on the Work Item lifecycle.
 - **Explainability** depends on the immutable trail of Events behind each Work Item.
 

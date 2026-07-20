@@ -39,3 +39,7 @@ Operationally: prioritization exists to spend attention well; the product succee
 
 - **Optimize for engagement / time-in-app**: rejected — directly opposed to the mission; would make Orion another attention thief.
 - **Optimize for completeness / coverage**: rejected — "show everything" recreates the overload we're solving.
+
+---
+
+> **Terminology note (2026-07):** Subsequent documentation refers to the subsystem formerly called the "Context Engine" as the *Understanding Engine* (see [architecture](../architecture/understanding-engine.md)). This ADR's architectural decision is unchanged.
