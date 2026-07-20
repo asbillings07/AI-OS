@@ -38,11 +38,13 @@ export class AiLayer implements AiCapabilities {
     const start = Date.now();
     try {
       const result = await this.#provider.summarize(request);
-      if (typeof result.summary !== "string" || result.summary.length === 0) {
+      const summary = typeof result.summary === "string" ? result.summary.trim() : "";
+      if (summary.length === 0) {
+        // Whitespace-only is as useless as empty — reject it, don't record success.
         throw new AiError("summarize: provider returned an empty summary");
       }
       const validated: SummarizeResult = {
-        summary: result.summary,
+        summary,
         confidence: clampConfidence(result.confidence),
       };
       this.#record("summarize", start, true, validated.confidence);
@@ -56,14 +58,18 @@ export class AiLayer implements AiCapabilities {
   async classify(request: ClassifyRequest): Promise<ClassifyResult> {
     const start = Date.now();
     try {
+      // An empty label set has no valid answer — reject it up front rather than
+      // inventing an empty-string label that violates the ClassifyRequest contract.
+      const [firstLabel] = request.labels;
+      if (firstLabel === undefined) {
+        throw new AiError("classify: request.labels must not be empty");
+      }
       const result = await this.#provider.classify(request);
       // Structured validation: the label MUST be one the caller allowed.
-      const label = request.labels.includes(result.label)
-        ? result.label
-        : (request.labels[0] ?? "");
+      const allowed = request.labels.includes(result.label);
       const validated: ClassifyResult = {
-        label,
-        confidence: request.labels.includes(result.label) ? clampConfidence(result.confidence) : 0,
+        label: allowed ? result.label : firstLabel,
+        confidence: allowed ? clampConfidence(result.confidence) : 0,
       };
       this.#record("classify", start, true, validated.confidence);
       return validated;

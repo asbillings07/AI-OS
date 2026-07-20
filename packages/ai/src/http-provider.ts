@@ -44,9 +44,13 @@ export class HttpAiProvider implements AiProvider {
   }
 
   async classify(request: ClassifyRequest): Promise<ClassifyResult> {
+    const [firstLabel] = request.labels;
+    if (firstLabel === undefined) {
+      throw new AiError("classify: request.labels must not be empty");
+    }
     const system = `Classify the text as exactly one of: ${request.labels.join(", ")}. Reply with only the label.`;
     const raw = (await this.#chat(system, request.text)).trim().toLowerCase();
-    const label = request.labels.find((candidate) => candidate.toLowerCase() === raw) ?? request.labels[0] ?? "";
+    const label = request.labels.find((candidate) => candidate.toLowerCase() === raw) ?? firstLabel;
     return { label, confidence: 0.7 };
   }
 

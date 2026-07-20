@@ -38,6 +38,27 @@ function threadEventIds(thread: ThreadContext): string[] {
 }
 
 /**
+ * Whether a thread is currently actionable. Open threads always are. A snoozed
+ * thread resurfaces once its snooze window has passed — otherwise a snooze would
+ * silence a conversation forever, not just defer it. Handled and dismissed
+ * threads stay quiet until a new inbound message reopens them.
+ */
+function isActionable(thread: ThreadContext, now: string): boolean {
+  switch (thread.status) {
+    case "open":
+      return true;
+    case "snoozed":
+      return (
+        thread.snoozedUntil !== undefined &&
+        new Date(thread.snoozedUntil).getTime() <= new Date(now).getTime()
+      );
+    case "handled":
+    case "dismissed":
+      return false;
+  }
+}
+
+/**
  * Derive Signals from Context. Pure and deterministic given `now`, which is
  * passed in (never read from the clock) so replay and tests are reproducible.
  */
@@ -45,7 +66,7 @@ export function detectSignals(context: ContextState, now: string): Signal[] {
   const signals: Signal[] = [];
 
   for (const thread of Object.values(context.threads)) {
-    if (thread.status !== "open") {
+    if (!isActionable(thread, now)) {
       continue;
     }
 

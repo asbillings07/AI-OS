@@ -31,6 +31,25 @@ describe("AI capability layer (ADR-0011)", () => {
     expect(result.label).toBe("needs_reply");
   });
 
+  it("rejects an empty label set instead of inventing an empty-string label", async () => {
+    const ai = createAi({ env: {} });
+    await expect(ai.classify({ text: "anything", labels: [] })).rejects.toThrow(/labels must not be empty/);
+  });
+
+  it("rejects a whitespace-only summary from a provider", async () => {
+    const blank: AiProvider = {
+      name: "blank",
+      async summarize() {
+        return { summary: "   \n\t ", confidence: 0.9 };
+      },
+      async classify() {
+        return { label: "a", confidence: 0.9 };
+      },
+    };
+    const ai = createAi({ provider: blank });
+    await expect(ai.summarize({ text: "hi" })).rejects.toThrow(/empty summary/);
+  });
+
   it("coerces a provider label outside the allowed set (structured validation)", async () => {
     const rogue: AiProvider = {
       name: "rogue",

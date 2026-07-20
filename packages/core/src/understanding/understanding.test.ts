@@ -94,6 +94,26 @@ describe("Signal detection (deterministic)", () => {
     expect(detectSignals(context, "2026-07-16T12:00:00.000Z")).toHaveLength(0);
   });
 
+  it("keeps a snoozed thread silent until snoozedUntil, then lets it resurface", () => {
+    const received = message({ threadId: "t1", messageId: "m1" });
+    const snoozed = makeEvent({
+      type: EventTypes.WorkItemSnoozed,
+      source: "user",
+      payload: { workItemId: "w1", threadId: "t1", snoozedUntil: "2026-07-16T09:00:00.000Z" },
+    });
+    const context = [received, snoozed].reduce(
+      (state, event) => contextProjection.apply(state, event),
+      contextProjection.init(),
+    );
+
+    // Still inside the snooze window: silent.
+    expect(detectSignals(context, "2026-07-15T18:00:00.000Z")).toHaveLength(0);
+    // Past the snooze window: resurfaces as a normal actionable thread.
+    expect(detectSignals(context, "2026-07-16T10:00:00.000Z").map((s) => s.kind)).toContain(
+      "AwaitingReply",
+    );
+  });
+
   it("raises an Aging signal once a thread waits long enough", () => {
     const context = fold([message({ threadId: "t1", messageId: "m1", receivedAt: "2026-07-13T09:00:00.000Z" })]);
     const kinds = detectSignals(context, "2026-07-15T09:00:00.000Z").map((s) => s.kind);
