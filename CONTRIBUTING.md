@@ -11,16 +11,17 @@ The golden rule: **every contribution should be traceable to the principles.** I
 
 ## Start here: read the constitution first
 
-Before writing code, read these in order. They take under an hour and will let you make good decisions without asking:
+Before writing code, read these in order. They take under an hour and will let you make good decisions without asking. Purpose comes first, then *how Orion thinks*, then the vocabulary and universe it thinks about, then the constraints on building it:
 
 1. [Product Vision](./docs/vision/vision.md) — why Orion exists
-2. [Engineering Principles](./docs/principles/engineering.md) — how we build (the constitution)
-3. [Product Principles](./docs/principles/product.md) — how the product behaves
-4. [Design Principles](./docs/principles/design.md) — how interactions feel
-5. [Domain README](./docs/domain/README.md) — the vocabulary
-6. [The Decision Loop (Mental Model)](./docs/domain/mental-model.md) — **how Orion thinks** (read this one twice)
-7. [ADRs](./docs/adr/) — why the foundational decisions were made
-8. Then open the code.
+2. [The Decision Loop (Mental Model)](./docs/domain/mental-model.md) — **how Orion thinks** (read this one twice)
+3. [Ubiquitous Language](./docs/domain/ubiquitous-language.md) — the shared vocabulary; use these words exactly
+4. [Domain Model](./docs/domain/domain-model.md) — the universe Orion understands and where responsibility lives
+5. [Engineering Principles](./docs/principles/engineering.md) — how we build (the constitution)
+6. [Product Principles](./docs/principles/product.md) — how the product behaves
+7. [Design Principles](./docs/principles/design.md) — how interactions feel
+8. [ADRs](./docs/adr/) — why the foundational decisions were made
+9. Then open the code.
 
 When evaluating any change, the first question is the one from the Mental Model: **"Where does this fit in the Decision Loop?"** If the answer is unclear, the design needs more thought.
 
