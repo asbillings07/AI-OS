@@ -2,7 +2,9 @@ import { gmailMessages, type RawGmailMessage } from "@orion/fixtures";
 
 /**
  * Where raw Gmail messages come from. The Skill depends on this seam, not on
- * Gmail itself, so fixtures and live OAuth are interchangeable (ADR-0009).
+ * Gmail itself, so fixtures and live OAuth are interchangeable (ADR-0010: a
+ * Skill owns its adapters). Fixtures-first keeps runs offline and replayable
+ * (ADR-0009), but the seam itself is a Skill-architecture boundary.
  */
 export interface GmailSource {
   readonly name: string;
@@ -58,12 +60,12 @@ export class LiveGmailSource implements GmailSource {
       q: this.#options.query ?? "in:inbox newer_than:7d",
       maxResults: String(this.#options.maxResults ?? 25),
     });
-    const list = (await this.#json(`${base}?${params.toString()}`)) as GmailListResponse;
+    const list = await this.#json<GmailListResponse>(`${base}?${params.toString()}`);
     const ids = (list.messages ?? []).map((message) => message.id);
-    return Promise.all(ids.map((id) => this.#json(`${base}/${id}?format=full`) as Promise<RawGmailMessage>));
+    return Promise.all(ids.map((id) => this.#json<RawGmailMessage>(`${base}/${id}?format=full`)));
   }
 
-  async #json(url: string): Promise<unknown> {
+  async #json<T>(url: string): Promise<T> {
     const response = await this.#fetch(url, {
       headers: { authorization: `Bearer ${this.#options.accessToken}` },
     });
@@ -73,6 +75,6 @@ export class LiveGmailSource implements GmailSource {
         `Gmail API request failed: ${response.status} ${response.statusText} (${url})`,
       );
     }
-    return response.json();
+    return response.json() as Promise<T>;
   }
 }
