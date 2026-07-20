@@ -36,6 +36,13 @@ describe("AI capability layer (ADR-0011)", () => {
     await expect(ai.classify({ text: "anything", labels: [] })).rejects.toThrow(/labels must not be empty/);
   });
 
+  it("rejects an empty label set even when the deterministic provider is called directly", async () => {
+    const provider = new DeterministicProvider();
+    await expect(provider.classify({ text: "anything", labels: [] })).rejects.toThrow(
+      /labels must not be empty/,
+    );
+  });
+
   it("rejects a whitespace-only summary from a provider", async () => {
     const blank: AiProvider = {
       name: "blank",

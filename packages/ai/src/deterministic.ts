@@ -1,9 +1,10 @@
-import type {
-  AiProvider,
-  ClassifyRequest,
-  ClassifyResult,
-  SummarizeRequest,
-  SummarizeResult,
+import {
+  AiError,
+  type AiProvider,
+  type ClassifyRequest,
+  type ClassifyResult,
+  type SummarizeRequest,
+  type SummarizeResult,
 } from "./capabilities.js";
 
 function splitSentences(text: string): string[] {
@@ -41,8 +42,14 @@ export class DeterministicProvider implements AiProvider {
   }
 
   async classify(request: ClassifyRequest): Promise<ClassifyResult> {
+    // Honor the ClassifyRequest contract even when called directly (not via the
+    // AiLayer): an empty label set has no valid answer.
+    const [firstLabel] = request.labels;
+    if (firstLabel === undefined) {
+      throw new AiError("classify: request.labels must not be empty");
+    }
     const haystack = ` ${tokenize(request.text).join(" ")} `;
-    let best = { label: request.labels[0] ?? "", score: 0 };
+    let best = { label: firstLabel, score: 0 };
     for (const label of request.labels) {
       const score = tokenize(label).reduce(
         (sum, token) => sum + (haystack.includes(` ${token} `) ? 1 : 0),
