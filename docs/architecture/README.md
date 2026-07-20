@@ -6,6 +6,10 @@ This folder documents Orion's system structure: boundaries, event flows, adapter
 
 Architecture is expected to evolve with implementation. It must stay aligned with the [principles](../principles/) — every structural choice should be traceable to a principle or an ADR.
 
+## Implementation
+
+- [The First Vertical Slice](./vertical-slice.md) (#18) — the first end-to-end implementation: a Gmail message flows through the event backbone, the Understanding Engine, Opportunity/Capacity/Prioritization, and into Mission Control, with a user action closing the loop. Shows exactly how the ADRs map to code.
+
 ## The Understanding Engine
 
 The **Understanding Engine** (formerly "Context Engine", #25) is the subsystem that owns the entire middle layer of the [Mental Model](../domain/mental-model.md) — everything between Reality and Decision:
