@@ -24,6 +24,8 @@ The first slice persists Gmail-derived events and builds Context from them. If "
 - **Knowledge & Memory — durable, provenanced.** [Memory](../architecture/memory.md) and knowledge carry provenance and confidence and persist across the lifetime of the workspace, distinct from transient Context.
 - **AI artifacts — derived and disposable.** Embeddings, summaries, plans, and cached reasoning are treated as a **cache**: reproducible from events + current models, never a source of truth. Models improve; artifacts get regenerated.
 
+> **Projection vs. Cache.** Both are derived from events and neither is authoritative, but they differ in intent. A **projection** is derived state with *semantic meaning* — it is queried as understanding (Context, Timeline, Priorities). A **cache** is a pure *performance optimization* with no semantic authority (embeddings, memoized summaries). Rebuilding a projection restores meaning; rebuilding a cache only restores speed.
+
 Two rules make this concrete:
 
 1. **Store facts, derive interpretation.** Store *that an email arrived*; do not store *that it is important* — importance is derived and will change as context and models evolve. (This is the storage expression of "facts are forever, context is temporary" — see [Context Lifecycle](../architecture/context-lifecycle.md).)

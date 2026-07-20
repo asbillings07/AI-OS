@@ -25,6 +25,7 @@ Specifically:
 - Ingestion adapters translate external happenings into Orion **Events** (never leaking vendor shape — [Eng #8](../principles/engineering.md)).
 - The Understanding Engine and Skills **consume** events and **emit** new events (including Orion's own [Observations](../domain/ubiquitous-language.md)); they do not reach into each other.
 - Processing is **asynchronous and loosely coupled** by default; direct synchronous calls are the exception, reserved for cases that genuinely need a request/response answer (e.g. a query through the [Context Query API](../architecture/context-query-api.md)).
+- This governs communication *between* components. **Direct synchronous calls remain acceptable within a single bounded component when no architectural boundary is crossed** — this ADR is about how parts cooperate, not a ban on ordinary method calls.
 - The concrete transport (in-process dispatch for v0.1 vs. an external broker later) is deliberately **not** decided here — that is a reversible implementation choice ([Eng #12](../principles/engineering.md)) captured in [ADR-0008](./0008-event-bus.md) and code, not a durable architectural commitment.
 
 ## In one sentence

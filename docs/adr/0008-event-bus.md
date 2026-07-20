@@ -22,6 +22,7 @@ The **durable contract** (independent of any technology):
 
 - **Publish/subscribe with fan-out.** Producers don't know their consumers; any component may subscribe to an event type.
 - **Events are immutable** ([ADR-0002](./0002-everything-is-an-event.md)) and carry a consistent envelope: identifier, type, timestamp, source, payload, and metadata including **correlation** and **causation** ids (so an event's lineage is traceable — [Eng #3](../principles/engineering.md), #7) and a **version**.
+- **Schema evolution is additive.** Consumers should be tolerant of additive changes (new optional fields) rather than breaking on them; the `version` marks a genuinely incompatible change. This keeps old events replayable forever as the system grows ([Eng #11](../principles/engineering.md)).
 - **Replayable.** Because events are persisted as the source of truth ([ADR-0009](./0009-storage-strategy.md)), consumers and projections can be rebuilt by replaying the stream.
 - **Consumers are idempotent.** Delivery is assumed to be at-least-once; consumers must tolerate duplicates (dedupe by event id). This is a stronger, more portable guarantee to design against than exactly-once.
 - **Ordering is guaranteed only within a correlated stream**, not globally. Components must not depend on a global total order.
