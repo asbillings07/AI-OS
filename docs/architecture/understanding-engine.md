@@ -91,6 +91,8 @@ Each is a document in this folder. In reading order:
 
 **Context** and **Relationships** are the substrate the whole engine is built on; they are defined in the [Domain Model](../domain/domain-model.md) and elaborated in the Context Lifecycle. **Signals** and **Insights** are likewise domain concepts; the engine is the machinery that produces them.
 
+> **v0.1 note.** Signals and Opportunities are keyed on a source-neutral **Subject** (a conversation, a change under review, an assigned item, a failing check), so understanding spans multiple Sources without the engine learning any Source's vocabulary. See the [Opportunity Detection](./opportunity-detection.md) v0.1 notes for the concrete subject-identity, Commitment, lifecycle, and correlation decisions (#44/#45).
+
 ---
 
 ## Boundaries

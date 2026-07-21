@@ -1,7 +1,8 @@
 import type { ContextState } from "../understanding/context.js";
-import { detectOpportunities, type Opportunity } from "../opportunity/index.js";
+import { detectOpportunities, type ThreadOpportunity } from "../opportunity/index.js";
 import { estimateCapacity, type Capacity } from "../capacity/index.js";
 import type { Signal } from "../understanding/signals.js";
+import { subjectKey } from "../understanding/subject.js";
 import { LogEvents, nullLogger, type Logger } from "../observability/index.js";
 
 export type WorkItemBand = "needs_attention" | "can_wait";
@@ -61,9 +62,8 @@ function buildReason(signals: Signal[]): string {
  * items earn "needs attention", and they resurface when Capacity improves.
  */
 export function prioritize(
-  opportunities: Opportunity[],
+  opportunities: readonly ThreadOpportunity[],
   capacity: Capacity,
-  context: ContextState,
 ): WorkItem[] {
   // Capacity sets the bar for attention (not the intrinsic score): plenty of
   // capacity -> a lower bar; little capacity -> a high bar, so only the most
@@ -71,31 +71,42 @@ export function prioritize(
   const attentionThreshold = 0.35 + (1 - capacity.level) * 0.35;
 
   const items = opportunities.map((opportunity): WorkItem => {
-    const signals = opportunity.signals;
-    const commitment = signalStrength(signals, "FromKnownPerson");
+    const signals = [...opportunity.signals];
+    // The `commitment` input currently blends explicit obligation (a Commitment
+    // Signal, e.g. an assignment) with relationship-derived expectation
+    // (FromKnownPerson). They are not the same thing — one is a duty, the other
+    // is social weight — and may split into separate dimensions later; for now
+    // the stronger of the two carries. Email produces no Commitment Signal, so
+    // this is byte-identical for email today.
+    const responsibilityStrength = Math.max(
+      signalStrength(signals, "Commitment"),
+      signalStrength(signals, "FromKnownPerson"),
+    );
     const urgency = Math.max(
       signalStrength(signals, "Aging"),
       signalStrength(signals, "DirectQuestion") > 0 ? 0.4 : 0.2,
     );
     const priority = Math.max(
       0,
-      Math.min(1, 0.45 * opportunity.value + 0.25 * urgency + 0.3 * commitment),
+      Math.min(1, 0.45 * opportunity.value + 0.25 * urgency + 0.3 * responsibilityStrength),
     );
-    const thread = context.threads[opportunity.threadId];
+    const threadId = opportunity.subject.id;
 
     return {
-      id: `wi-${opportunity.threadId}`,
-      threadId: opportunity.threadId,
-      title: thread?.subject ?? "Conversation",
+      id: `wi-${threadId}`,
+      threadId,
+      // The Opportunity already carries its display title; the ranking function no
+      // longer re-opens Context (the thread detector supplies subject or a default).
+      title: opportunity.title,
       band: priority >= attentionThreshold ? "needs_attention" : "can_wait",
       priority,
       opportunity: opportunity.value,
       capacity: capacity.level,
-      commitment,
+      commitment: responsibilityStrength,
       urgency,
       reason: buildReason(signals),
-      evidence: opportunity.evidence,
-      createdFromEventIds: opportunity.createdFromEventIds,
+      evidence: [...opportunity.evidence],
+      createdFromEventIds: [...opportunity.createdFromEventIds],
     };
   });
 
@@ -125,13 +136,13 @@ export function buildWorkItems(
     for (const opportunity of opportunities) {
       logger.event(LogEvents.OpportunityEvaluated, {
         kind: opportunity.kind,
-        threadId: opportunity.threadId,
+        subject: subjectKey(opportunity.subject),
         value: opportunity.value,
       });
     }
   }
   const capacity = estimateCapacity(now, context);
-  const items = prioritize(opportunities, capacity, context);
+  const items = prioritize(opportunities, capacity);
   if (tracing) {
     for (const item of items) {
       logger.event(LogEvents.WorkItemRanked, {

@@ -85,6 +85,50 @@ Opportunity Detection reads from the [Understanding Engine](./understanding-engi
 
 ---
 
+## v0.1 implementation notes (#44/#45)
+
+The first two Sources (Gmail, GitHub) exercise the model concretely. These notes record the decisions the code makes so they can be reviewed like architecture.
+
+### Subject: what an Opportunity is about
+
+An Opportunity is about a **Subject** — a source-neutral reference to the *persistent thing* Orion may act on, distinct from the *occurrence* Events that reveal it. Subject identity is deliberately stable across occurrences:
+
+- `thread` -> conversation id
+- `review` -> the change under review
+- `assignment` -> the assigned unit of work
+- `check` -> the pair of change and check name (two independent checks on one change stay distinct; retries of one check stay one subject)
+
+Signals and Opportunities carry a `SubjectRef`, not a source-specific id, so the model does not bend around Gmail or GitHub.
+
+### Opportunity kinds are interpretations, not facts
+
+Kinds name the actionable interpretation and never shadow an `EventTypes` fact:
+
+- `ReplyNeeded` (subject: thread) — from a `MessageReceived` fact. Type: Action.
+- `ReviewNeeded` (subject: review) — from a `ReviewRequested` fact. Type: Action.
+- `AssignedActionNeeded` (subject: assignment) — from an `AssignmentReceived` fact. Type: Action.
+- `RiskDetected` (subject: check) — from a `CheckFailed` fact. Type: Risk.
+
+The model is a discriminated union, so `kind` and `subject.kind` are locked together in the type system.
+
+### Commitment is an explicit obligation
+
+Where a Source states obligation directly (a review requested *from you*, an item assigned *to you*), detection emits a first-class `Commitment` Signal. This is distinct from a relationship-derived expectation (a message from someone you often correspond with). Prioritization currently combines both into one factor (see the [Prioritization Engine](./prioritization-engine.md)); a failed check is a **Risk**, not a Commitment.
+
+### Lifecycle limitation: derived work is currently monotonic
+
+The vocabulary records obligation *appearing* (review requested, assignment received, check failed) but not yet *disappearing* (withdrawn, reassigned, later-succeeded). So review/assignment/check Context is **monotonic** in v0.1: once a subject is present, no source fact clears it. A future user action (#46) controls **presentation** and must **not** be read as evidence the external condition resolved. A live Source will need resolution facts (e.g. `ReviewRequestWithdrawn`, `AssignmentRemoved`, `CheckSucceeded`) or a general state-transition strategy.
+
+### Cross-source correlation is not yet solved
+
+The fixtures include an automated Gmail notification and a GitHub `ReviewRequested` that describe the **same external occurrence through two Sources** — an event-level correlation *candidate*, not yet proof of de-duplication (today only the GitHub side becomes an Opportunity; the automated email is silent). #46 must choose a policy: correlate the facts before detection, allow both candidate Opportunities and then collapse them, or define automated-email suppression as the correlation rule.
+
+### The decision layer is type-gated to threads until #46
+
+In #45 GitHub Opportunities are detected and proven, but the Prioritization Engine and Mission Control accept only thread Opportunities (enforced in the type system, not just by convention). Composing both Sources into one ranked, presented, actionable view is #46.
+
+---
+
 ## Related documents
 
 - [Understanding Engine](./understanding-engine.md) (#25) · [Capacity](./capacity.md) (#10) · [Prioritization Engine](./prioritization-engine.md) (#29)

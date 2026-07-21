@@ -39,7 +39,7 @@ describe("Opportunity detection (#26)", () => {
     ]);
     const opportunities = detectOpportunities(context, NOON);
     expect(opportunities).toHaveLength(1);
-    expect(opportunities[0]?.threadId).toBe("t1");
+    expect(opportunities[0]?.subject).toEqual({ kind: "thread", id: "t1" });
     expect(opportunities[0]?.kind).toBe("ReplyNeeded");
   });
 });
@@ -84,8 +84,8 @@ describe("Prioritization (#29)", () => {
     const context = contextOf([message({ threadId: "t1", messageId: "m1" })]);
     const opportunities = detectOpportunities(context, NOON);
 
-    const highCapacity = prioritize(opportunities, { level: 0.9, evidence: [] }, context);
-    const lowCapacity = prioritize(opportunities, { level: 0.1, evidence: [] }, context);
+    const highCapacity = prioritize(opportunities, { level: 0.9, evidence: [] });
+    const lowCapacity = prioritize(opportunities, { level: 0.1, evidence: [] });
 
     // Same intrinsic priority, different banding driven purely by Capacity.
     expect(highCapacity[0]?.priority).toBe(lowCapacity[0]?.priority);
