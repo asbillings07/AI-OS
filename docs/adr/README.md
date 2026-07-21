@@ -58,6 +58,7 @@ These establish *how Orion is built*. Each records a **durable, vendor-agnostic 
 | [0009](./0009-storage-strategy.md) | Storage Strategy (events are the source of truth; the rest is projection) | Accepted |
 | [0010](./0010-skill-architecture.md) | Skill Architecture (extend via events and Context, never the core) | Accepted |
 | [0011](./0011-ai-abstraction-layer.md) | AI Abstraction Layer (ask for capabilities, not providers) | Accepted |
+| [0012](./0012-attention-is-a-projection-distinct-from-context.md) | Attention is a Projection, Distinct from Context (source-neutral suppression) | Accepted |
 
 (Note: some GitHub issue titles use provisional labels like "ADR-002: Event Bus." Those labels predate this numbering scheme; the canonical ids are assigned here when the ADR is written — e.g. issue #21 became ADR-0008.)
 

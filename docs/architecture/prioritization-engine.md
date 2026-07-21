@@ -43,13 +43,17 @@ Prioritization weighs four **independent** dimensions. They are deliberately kep
 
 The Prioritization Engine is responsible for:
 
-- **Consuming Opportunities** and evaluating them against Capacity, Commitment, and Urgency.
+- **Consuming Opportunities of every kind** and evaluating them against Capacity, Commitment, and Urgency. As of #46 the ranker is **source-neutral**: it consumes any Opportunity — a conversation, a review, an assignment, a failing check — through one vocabulary. A Work Item is about a source-neutral `Subject`, never a `threadId`, and each Opportunity carries its own presentation (title, location, url) so ranking never reaches back into Context. Ties are broken deterministically by `subjectKey`, so the order detectors happen to run in can never bias the result.
 - **Producing a ranked set of [Work Items](../domain/domain-model.md)** — the canonical attention-level unit ([ADR-0003](../adr/0003-everything-important-becomes-a-work-item.md)).
-- **Explaining every ranking** — each item carries an [Explanation](../domain/ubiquitous-language.md) of *why it is where it is* ([Product #4](../principles/product.md)). "Why is this first?" must always be answerable.
-- **Re-ranking continuously** as Context, Capacity, and new Opportunities change.
+- **Explaining every ranking** — each item carries an [Explanation](../domain/ubiquitous-language.md) of *why it is where it is* ([Product #4](../principles/product.md)). "Why is this first?" must always be answerable, in source-neutral language.
+- **Re-ranking continuously** as Context, Attention, Capacity, and new Opportunities change.
 - **Producing silence when appropriate** — an empty or short list is a valid, valuable output, not a failure ([ADR-0006](../adr/0006-attention-is-the-primary-resource.md)).
 
-It is **not** responsible for: detecting opportunities, estimating capacity, executing tasks, deciding on the user's behalf, or presenting UI. It ranks; the user decides.
+It is **not** responsible for: detecting opportunities, estimating capacity, deciding *visibility*, executing tasks, deciding on the user's behalf, or presenting UI. It ranks; the user decides.
+
+### Reality in, presentation out: the visibility stage
+
+Prioritization operates on Opportunities derived purely from **reality** (Context). Whether the user has already *handled, snoozed, or dismissed* a situation is a fact about **presentation**, not reality, and is modeled separately as the **Attention** projection ([ADR-0012](../adr/0012-attention-is-a-projection-distinct-from-context.md)). A single `isVisible(opportunity, attention, now)` function — the sole suppression authority — filters reality-derived Opportunities before ranking. Actions are scoped to the exact revision the user saw (`attentionBasisEventIds`), so a genuinely new occurrence resurfaces an item while a late-arriving older fact stays quiet.
 
 ---
 

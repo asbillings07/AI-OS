@@ -117,15 +117,15 @@ Where a Source states obligation directly (a review requested *from you*, an ite
 
 ### Lifecycle limitation: derived work is currently monotonic
 
-The vocabulary records obligation *appearing* (review requested, assignment received, check failed) but not yet *disappearing* (withdrawn, reassigned, later-succeeded). So review/assignment/check Context is **monotonic** in v0.1: once a subject is present, no source fact clears it. A future user action (#46) controls **presentation** and must **not** be read as evidence the external condition resolved. A live Source will need resolution facts (e.g. `ReviewRequestWithdrawn`, `AssignmentRemoved`, `CheckSucceeded`) or a general state-transition strategy.
+The vocabulary records obligation *appearing* (review requested, assignment received, check failed) but not yet *disappearing* (withdrawn, reassigned, later-succeeded). So review/assignment/check Context is **monotonic** in v0.1: once a subject is present, no source fact clears it. A user action controls **presentation** — it is recorded on the **Attention** projection, never on Context ([ADR-0012](../adr/0012-attention-is-a-projection-distinct-from-context.md)) — and must **not** be read as evidence the external condition resolved. A live Source will need resolution facts (e.g. `ReviewRequestWithdrawn`, `AssignmentRemoved`, `CheckSucceeded`) or a general state-transition strategy.
 
 ### Cross-source correlation is not yet solved
 
-The fixtures include an automated Gmail notification and a GitHub `ReviewRequested` that describe the **same external occurrence through two Sources** — an event-level correlation *candidate*, not yet proof of de-duplication (today only the GitHub side becomes an Opportunity; the automated email is silent). #46 must choose a policy: correlate the facts before detection, allow both candidate Opportunities and then collapse them, or define automated-email suppression as the correlation rule.
+The fixtures include an automated Gmail notification and a GitHub `ReviewRequested` that describe the **same external occurrence through two Sources** — an event-level correlation *candidate*, not yet proof of de-duplication. Today the automated email is silent for an unrelated reason (automated senders raise `LikelyLowValue`, never `ReplyNeeded`), so only the GitHub side becomes an Opportunity; this is *coincidental* suppression, not correlation. #46 deliberately did **not** solve correlation: it composed the two Sources into one ranked view and left true de-duplication (recognizing that these two facts are the *same* occurrence and collapsing them) as follow-up. The seam it added — Subject-keyed, revision-scoped Attention — is where a future correlation policy will attach.
 
-### The decision layer is type-gated to threads until #46
+### The decision layer is now source-neutral (#46, done)
 
-In #45 GitHub Opportunities are detected and proven, but the Prioritization Engine and Mission Control accept only thread Opportunities (enforced in the type system, not just by convention). Composing both Sources into one ranked, presented, actionable view is #46.
+As of #46 the Prioritization Engine and Mission Control accept **every** Opportunity kind. A Work Item is about a source-neutral `Subject` (not a `threadId`); GitHub reviews, assignments, and checks are ranked, presented, and actioned through exactly the same path as conversations, with no source-specific rules in Mission Control. Suppression (handled/snoozed/dismissed) is the **Attention** projection's job, applied at the visibility stage ([ADR-0012](../adr/0012-attention-is-a-projection-distinct-from-context.md)).
 
 ---
 

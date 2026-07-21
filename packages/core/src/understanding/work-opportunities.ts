@@ -2,7 +2,7 @@ import type { Opportunity } from "../opportunity/index.js";
 import type { ContextState } from "./context.js";
 import type { Signal } from "./signals.js";
 import { detectWorkSignals } from "./work-signals.js";
-import { subjectKey, type SubjectRef } from "./subject.js";
+import { subjectKey, type SubjectRef } from "../subject/index.js";
 
 /**
  * Turn collaborative-work Signals into typed Opportunities. Deterministic given
@@ -35,16 +35,38 @@ function opportunityValue(signals: readonly Signal[]): number {
   );
 }
 
-function titleFor(context: ContextState, subject: SubjectRef): string {
+interface Presentation {
+  readonly title: string;
+  readonly location?: string;
+  readonly url?: string;
+  /** The occurrence that currently supplies display fields — the attention revision. */
+  readonly latestEventId?: string;
+}
+
+/**
+ * Self-contained presentation for a subject, resolved from Context here (during
+ * detection) so ranking never has to reopen Context. `latestEventId` is the
+ * subject's current display occurrence and becomes the Opportunity's attention
+ * revision.
+ */
+function presentationFor(context: ContextState, subject: SubjectRef): Presentation {
   switch (subject.kind) {
-    case "review":
-      return context.reviews[subject.id]?.title ?? "Review requested";
-    case "assignment":
-      return context.assignments[subject.id]?.title ?? "Assigned work";
-    case "check":
-      return context.checks[subject.id]?.title ?? "Check failed";
-    case "thread":
-      return context.threads[subject.id]?.subject ?? "Conversation";
+    case "review": {
+      const c = context.reviews[subject.id];
+      return { title: c?.title ?? "Review requested", location: c?.location, url: c?.url, latestEventId: c?.latestEventId };
+    }
+    case "assignment": {
+      const c = context.assignments[subject.id];
+      return { title: c?.title ?? "Assigned work", location: c?.location, url: c?.url, latestEventId: c?.latestEventId };
+    }
+    case "check": {
+      const c = context.checks[subject.id];
+      return { title: c?.title ?? "Check failed", location: c?.location, url: c?.url, latestEventId: c?.latestEventId };
+    }
+    case "thread": {
+      const c = context.threads[subject.id];
+      return { title: c?.subject ?? "Conversation" };
+    }
   }
 }
 
@@ -63,43 +85,23 @@ export function detectWorkOpportunities(context: ContextState, now: string): Opp
   for (const group of bySubject.values()) {
     const subject = group[0]!.subject;
     const value = opportunityValue(group);
-    const title = titleFor(context, subject);
+    const { title, location, url, latestEventId } = presentationFor(context, subject);
     const evidence = group.map((signal) => signal.evidence);
     const createdFromEventIds = [...new Set(group.flatMap((signal) => signal.sourceEventIds))];
+    // The attention revision is the subject's current display occurrence; fall
+    // back to full provenance only if Context somehow lacks it.
+    const attentionBasisEventIds = latestEventId ? [latestEventId] : createdFromEventIds;
+    const common = { title, location, url, value, signals: group, evidence, createdFromEventIds, attentionBasisEventIds };
 
     switch (subject.kind) {
       case "review":
-        opportunities.push({
-          kind: "ReviewNeeded",
-          subject: { kind: "review", id: subject.id },
-          title,
-          value,
-          signals: group,
-          evidence,
-          createdFromEventIds,
-        });
+        opportunities.push({ kind: "ReviewNeeded", subject: { kind: "review", id: subject.id }, ...common });
         break;
       case "assignment":
-        opportunities.push({
-          kind: "AssignedActionNeeded",
-          subject: { kind: "assignment", id: subject.id },
-          title,
-          value,
-          signals: group,
-          evidence,
-          createdFromEventIds,
-        });
+        opportunities.push({ kind: "AssignedActionNeeded", subject: { kind: "assignment", id: subject.id }, ...common });
         break;
       case "check":
-        opportunities.push({
-          kind: "RiskDetected",
-          subject: { kind: "check", id: subject.id },
-          title,
-          value,
-          signals: group,
-          evidence,
-          createdFromEventIds,
-        });
+        opportunities.push({ kind: "RiskDetected", subject: { kind: "check", id: subject.id }, ...common });
         break;
       case "thread":
         // detectWorkSignals never emits thread subjects; ignore defensively.

@@ -2,16 +2,25 @@ import type { EventEnvelope } from "../events/index.js";
 import type { Projection } from "../projection/index.js";
 import {
   EventTypes,
+  isCurrentActionPayload,
   type MessageReceivedPayload,
   type WorkItemActionPayload,
 } from "../domain/index.js";
+import type { SubjectRef } from "../subject/index.js";
 
 /** One moment on the Timeline — a readable point in Orion's history. */
 export interface TimelineEntry {
   at: string;
   eventId: string;
   threadId?: string;
+  /** The Subject this moment concerns (source-neutral), when known. */
+  subject?: SubjectRef;
   label: string;
+}
+
+/** The Subject an action concerned: the current payload's, or a legacy thread. */
+function actionSubject(payload: WorkItemActionPayload): SubjectRef {
+  return isCurrentActionPayload(payload) ? payload.subject : { kind: "thread", id: payload.threadId };
 }
 
 export type TimelineState = TimelineEntry[];
@@ -42,16 +51,16 @@ function describe(event: EventEnvelope): TimelineEntry | null {
       };
     }
     case EventTypes.WorkItemActedOn: {
-      const payload = event.payload as WorkItemActionPayload;
-      return { at: event.occurredAt, eventId: event.id, threadId: payload.threadId, label: "You handled a Work Item" };
+      const subject = actionSubject(event.payload as WorkItemActionPayload);
+      return { at: event.occurredAt, eventId: event.id, subject, label: "You handled a Work Item" };
     }
     case EventTypes.WorkItemSnoozed: {
-      const payload = event.payload as WorkItemActionPayload;
-      return { at: event.occurredAt, eventId: event.id, threadId: payload.threadId, label: "You snoozed a Work Item" };
+      const subject = actionSubject(event.payload as WorkItemActionPayload);
+      return { at: event.occurredAt, eventId: event.id, subject, label: "You snoozed a Work Item" };
     }
     case EventTypes.WorkItemDismissed: {
-      const payload = event.payload as WorkItemActionPayload;
-      return { at: event.occurredAt, eventId: event.id, threadId: payload.threadId, label: "You dismissed a Work Item" };
+      const subject = actionSubject(event.payload as WorkItemActionPayload);
+      return { at: event.occurredAt, eventId: event.id, subject, label: "You dismissed a Work Item" };
     }
     default:
       return null;

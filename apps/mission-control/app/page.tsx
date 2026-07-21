@@ -17,7 +17,6 @@ function ActionButtons({ item }: { item: WorkItem }) {
       {(["acted", "snoozed", "dismissed"] as const).map((action) => (
         <form action={actOnWorkItem} key={action}>
           <input type="hidden" name="workItemId" value={item.id} />
-          <input type="hidden" name="threadId" value={item.threadId} />
           <input type="hidden" name="action" value={action} />
           <button type="submit" className={`action action--${action}`}>
             {action === "acted" ? "Handled" : action === "snoozed" ? "Later" : "Not now"}
@@ -32,6 +31,17 @@ function Card({ item, muted }: { item: WorkItem; muted?: boolean }) {
   return (
     <article className={`card${muted ? " card--muted" : ""}`}>
       <h3 className="card__title">{item.title}</h3>
+      {item.location ? (
+        <p className="card__location">
+          {item.url ? (
+            <a href={item.url} target="_blank" rel="noreferrer">
+              {item.location}
+            </a>
+          ) : (
+            item.location
+          )}
+        </p>
+      ) : null}
       <p className="card__reason">{item.reason}</p>
 
       {item.summary ? (

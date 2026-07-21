@@ -63,6 +63,8 @@ Richer, added as evidence and trust grow — the estimate improves without the c
 
 The concept is stable across all of these: adding a signal sharpens the estimate; it does not redefine Capacity.
 
+> **v0.1 note — load is measured as visible attention demand.** In code the "current load" signal counts the number of Work Items Orion is *currently asking the user to consider* (`activeWorkCount`), not everything unresolved in the outside world. A dismissed or snoozed item stops weighing on Capacity while it is hidden and re-enters load when it resurfaces ([ADR-0012](../adr/0012-attention-is-a-projection-distinct-from-context.md)). This is deliberately source-neutral: Capacity does not know whether the work happens to be an email thread, a review, or a failing check.
+
 ---
 
 ## How Capacity shapes recommendations

@@ -1,5 +1,6 @@
 export * from "./events/index.js";
 export * from "./observability/index.js";
+export * from "./subject/index.js";
 export * from "./domain/index.js";
 export * from "./skills/manifest.js";
 export * from "./bus/index.js";
@@ -8,5 +9,6 @@ export * from "./projection/index.js";
 export * from "./runtime/index.js";
 export * from "./understanding/index.js";
 export * from "./opportunity/index.js";
+export * from "./attention/index.js";
 export * from "./capacity/index.js";
 export * from "./prioritization/index.js";

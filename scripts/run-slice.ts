@@ -10,11 +10,13 @@ import {
   OrionRuntime,
   ProjectionHost,
   contextProjection,
+  attentionProjection,
   buildWorkItems,
   createLogger,
   makeEvent,
   EventTypes,
   LogEvents,
+  type AttentionState,
   type ContextState,
   type Logger,
   type WorkItem,
@@ -35,8 +37,8 @@ function printItem(item: WorkItem): void {
   );
 }
 
-function render(context: ContextState, label: string): WorkItem[] {
-  const items = buildWorkItems(context, NOW, logger);
+function render(context: ContextState, attention: AttentionState, label: string): WorkItem[] {
+  const items = buildWorkItems({ context, attention, now: NOW, logger });
   const needs = items.filter((i) => i.band === "needs_attention");
   const wait = items.filter((i) => i.band === "can_wait");
   console.log(`\n=== ${label} ===`);
@@ -52,10 +54,11 @@ async function main(): Promise<void> {
   try {
     const bus = new InProcessEventBus();
     const context = new ProjectionHost(contextProjection);
+    const attention = new ProjectionHost(attentionProjection);
     const runtime = new OrionRuntime({
       bus,
       store,
-      projections: [context as ProjectionHost<unknown>],
+      projections: [context as ProjectionHost<unknown>, attention as ProjectionHost<unknown>],
       logger,
     });
 
@@ -66,9 +69,10 @@ async function main(): Promise<void> {
       `Ingested ${gmail.length} Gmail + ${github.length} GitHub -> ${store.count()} events on the log.`,
     );
 
-    const before = render(context.state, "Mission Control");
+    const before = render(context.state, attention.state, "Mission Control");
 
-    // Close the loop: the user handles the top item.
+    // Close the loop: the user handles the top item — an email or a GitHub item,
+    // whichever ranks first. The action is scoped to the item's attention basis.
     const top = before.find((item) => item.band === "needs_attention");
     if (top) {
       console.log(`\n>> You handle "${top.title}". Recording the decision as a new Event...`);
@@ -76,16 +80,16 @@ async function main(): Promise<void> {
         makeEvent({
           type: EventTypes.WorkItemActedOn,
           source: "user",
-          payload: { workItemId: top.id, threadId: top.threadId },
+          payload: { workItemId: top.id, subject: top.subject, basisEventIds: top.attentionBasisEventIds },
         }),
       );
       // Trace the action only after it's durably recorded.
       logger.event(LogEvents.UserActionRecorded, {
         action: "acted",
         workItemId: top.id,
-        threadId: top.threadId,
+        subject: `${top.subject.kind}:${top.subject.id}`,
       });
-      render(context.state, "Mission Control (after your action)");
+      render(context.state, attention.state, "Mission Control (after your action)");
     }
 
     console.log("\nDone. Every ranking above was decided deterministically; no AI was required.");

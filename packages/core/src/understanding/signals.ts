@@ -47,41 +47,18 @@ function threadEventIds(thread: ThreadContext): string[] {
 }
 
 /**
- * Whether a thread is currently actionable. Open threads always are. A snoozed
- * thread resurfaces on its own once its snooze window has passed; a new inbound
- * message reopens it sooner by flipping it back to "open" (see context.ts
- * applyMessageReceived) — fresh activity overrides a defer, the way an email
- * client un-snoozes a thread when a reply arrives. A handled thread likewise
- * reopens on new inbound. Dismissed is a durable mute: it stays silent even if
- * the conversation continues.
- */
-function isActionable(thread: ThreadContext, now: string): boolean {
-  switch (thread.status) {
-    case "open":
-      return true;
-    case "snoozed":
-      return (
-        thread.snoozedUntil !== undefined &&
-        new Date(thread.snoozedUntil).getTime() <= new Date(now).getTime()
-      );
-    case "handled":
-    case "dismissed":
-      return false;
-  }
-}
-
-/**
  * Derive Signals from Context. Pure and deterministic given `now`, which is
  * passed in (never read from the clock) so replay and tests are reproducible.
+ *
+ * Signals reflect *reality* only: every thread is considered regardless of the
+ * user's disposition toward it. Suppression (handled/snoozed/dismissed) is the
+ * Attention projection's job, applied later at the visibility stage (ADR-0012),
+ * so understanding never depends on how the user chose to present things.
  */
 export function detectSignals(context: ContextState, now: string): Signal[] {
   const signals: Signal[] = [];
 
   for (const thread of Object.values(context.threads)) {
-    if (!isActionable(thread, now)) {
-      continue;
-    }
-
     const subject: SubjectRef = { kind: "thread", id: thread.threadId };
     const eventIds = threadEventIds(thread);
     const lastSender = thread.messages[thread.messages.length - 1]?.from.address ?? "";

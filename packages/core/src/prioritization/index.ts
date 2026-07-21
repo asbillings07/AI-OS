@@ -1,22 +1,31 @@
 import type { ContextState } from "../understanding/context.js";
-import { detectOpportunities, type ThreadOpportunity } from "../opportunity/index.js";
+import { detectOpportunities } from "../opportunity/index.js";
+import type { Opportunity } from "../opportunity/index.js";
+import { detectWorkOpportunities } from "../understanding/work-opportunities.js";
 import { estimateCapacity, type Capacity } from "../capacity/index.js";
 import type { Signal } from "../understanding/signals.js";
-import { subjectKey } from "../understanding/subject.js";
+import { subjectKey, type SubjectRef } from "../subject/index.js";
+import { isVisible, type AttentionState } from "../attention/index.js";
 import { LogEvents, nullLogger, type Logger } from "../observability/index.js";
 
 export type WorkItemBand = "needs_attention" | "can_wait";
 
 /**
- * A Work Item (ADR-0003): the canonical unit of "this matters." Its Explanation
- * is *structured*, not a string — `reason` + `evidence` + `createdFromEventIds`
- * let Mission Control answer "Why is this here?" entirely from deterministic
- * reasoning (no AI required). `summary` is the only AI-derived, advisory field.
+ * A Work Item (ADR-0003): the canonical unit of "this matters," now source-neutral.
+ * It is about a `subject` (a conversation, a review, an assignment, a check), not a
+ * vendor. Its Explanation is *structured* — `reason` + `evidence` +
+ * `createdFromEventIds` let Mission Control answer "Why is this here?" entirely from
+ * deterministic reasoning (no AI). `summary` is the only AI-derived, advisory field.
  */
 export interface WorkItem {
   id: string;
-  threadId: string;
+  subject: SubjectRef;
+  kind: Opportunity["kind"];
   title: string;
+  /** Optional human-readable location for display, e.g. "acme/orion#128". */
+  location?: string;
+  /** Optional canonical link for display. */
+  url?: string;
   band: WorkItemBand;
   /** Final rank score, 0..1. */
   priority: number;
@@ -29,29 +38,59 @@ export interface WorkItem {
   reason: string;
   /** The full deterministic justification chain. */
   evidence: string[];
-  /** The Events this Work Item ultimately traces back to. */
+  /** The Events this Work Item ultimately traces back to (full provenance). */
   createdFromEventIds: string[];
+  /** The current presentation revision the user is being shown (for actions). */
+  attentionBasisEventIds: string[];
   /** Advisory AI summary (optional; explanation never depends on it). */
   summary?: string;
   summaryConfidence?: number;
 }
 
-function signalStrength(signals: Signal[], kind: Signal["kind"]): number {
+/** Canonical Work Item id. Thread ids keep their historical `wi-<threadId>` form. */
+export function workItemId(subject: SubjectRef): string {
+  return subject.kind === "thread" ? `wi-${subject.id}` : `wi-${subjectKey(subject)}`;
+}
+
+function signalStrength(signals: readonly Signal[], kind: Signal["kind"]): number {
   return signals.find((signal) => signal.kind === kind)?.strength ?? 0;
 }
 
-function buildReason(signals: Signal[]): string {
-  const parts = ["You have not replied to this conversation."];
-  if (signalStrength(signals, "DirectQuestion") > 0) {
-    parts.push("It asks a direct question.");
-  }
-  if (signalStrength(signals, "FromKnownPerson") > 0) {
-    parts.push("It's from someone you correspond with.");
-  }
-  if (signalStrength(signals, "Aging") > 0) {
-    parts.push("It has been waiting a while.");
-  }
+/** Source-neutral lead line for each Opportunity kind. */
+const LEAD_LINE: Record<Opportunity["kind"], string> = {
+  ReplyNeeded: "You have not replied to this conversation.",
+  ReviewNeeded: "A review is waiting on you.",
+  AssignedActionNeeded: "You have been asked to take this on.",
+  RiskDetected: "A check is failing on your work.",
+};
+
+/**
+ * A deterministic, source-neutral one-line reason: the kind's lead line plus any
+ * corroborating Signals that happen to be present. It consults Signal *kinds*, not
+ * sources, so an email and a review are explained through the same vocabulary.
+ */
+function buildReason(kind: Opportunity["kind"], signals: readonly Signal[]): string {
+  const parts = [LEAD_LINE[kind]];
+  if (signalStrength(signals, "DirectQuestion") > 0) parts.push("It asks a direct question.");
+  if (signalStrength(signals, "FromKnownPerson") > 0) parts.push("It's from someone you correspond with.");
+  if (signalStrength(signals, "Commitment") > 0) parts.push("You've taken this on.");
+  if (signalStrength(signals, "Aging") > 0) parts.push("It has been waiting a while.");
   return parts.join(" ");
+}
+
+/**
+ * A deterministic, source-neutral ordering. Primary is priority; ties fall through
+ * to the independent reasoning dimensions and finally to `subjectKey`, so the order
+ * the detectors happened to run in can NEVER decide a tie (no email-first bias).
+ */
+export function compareWorkItems(a: WorkItem, b: WorkItem): number {
+  return (
+    b.priority - a.priority ||
+    b.urgency - a.urgency ||
+    b.commitment - a.commitment ||
+    b.opportunity - a.opportunity ||
+    subjectKey(a.subject).localeCompare(subjectKey(b.subject))
+  );
 }
 
 /**
@@ -60,24 +99,20 @@ function buildReason(signals: Signal[]): string {
  * precision, per #29). Capacity is deliberately kept OUT of the intrinsic score
  * and instead raises the attention bar: when the user cannot act well, fewer
  * items earn "needs attention", and they resurface when Capacity improves.
+ *
+ * Source-neutral: it consumes any Opportunity kind and never reopens Context (the
+ * Opportunity already carries its own presentation fields).
  */
-export function prioritize(
-  opportunities: readonly ThreadOpportunity[],
-  capacity: Capacity,
-): WorkItem[] {
-  // Capacity sets the bar for attention (not the intrinsic score): plenty of
-  // capacity -> a lower bar; little capacity -> a high bar, so only the most
-  // valuable items interrupt and the rest wait for a better window.
+export function prioritize(opportunities: readonly Opportunity[], capacity: Capacity): WorkItem[] {
   const attentionThreshold = 0.35 + (1 - capacity.level) * 0.35;
 
   const items = opportunities.map((opportunity): WorkItem => {
-    const signals = [...opportunity.signals];
-    // The `commitment` input currently blends explicit obligation (a Commitment
-    // Signal, e.g. an assignment) with relationship-derived expectation
-    // (FromKnownPerson). They are not the same thing — one is a duty, the other
-    // is social weight — and may split into separate dimensions later; for now
-    // the stronger of the two carries. Email produces no Commitment Signal, so
-    // this is byte-identical for email today.
+    const signals = opportunity.signals;
+    // The `commitment` input blends explicit obligation (a Commitment Signal, e.g.
+    // an assignment or requested review) with relationship-derived expectation
+    // (FromKnownPerson). They are not the same thing — one is a duty, the other is
+    // social weight — and may split into separate dimensions later; for now the
+    // stronger of the two carries.
     const responsibilityStrength = Math.max(
       signalStrength(signals, "Commitment"),
       signalStrength(signals, "FromKnownPerson"),
@@ -90,50 +125,61 @@ export function prioritize(
       0,
       Math.min(1, 0.45 * opportunity.value + 0.25 * urgency + 0.3 * responsibilityStrength),
     );
-    const threadId = opportunity.subject.id;
 
     return {
-      id: `wi-${threadId}`,
-      threadId,
-      // The Opportunity already carries its display title; the ranking function no
-      // longer re-opens Context (the thread detector supplies subject or a default).
+      id: workItemId(opportunity.subject),
+      subject: opportunity.subject,
+      kind: opportunity.kind,
       title: opportunity.title,
+      location: opportunity.location,
+      url: opportunity.url,
       band: priority >= attentionThreshold ? "needs_attention" : "can_wait",
       priority,
       opportunity: opportunity.value,
       capacity: capacity.level,
       commitment: responsibilityStrength,
       urgency,
-      reason: buildReason(signals),
+      reason: buildReason(opportunity.kind, signals),
       evidence: [...opportunity.evidence],
       createdFromEventIds: [...opportunity.createdFromEventIds],
+      attentionBasisEventIds: [...opportunity.attentionBasisEventIds],
     };
   });
 
-  return items.sort((a, b) => b.priority - a.priority);
+  return items.sort(compareWorkItems);
+}
+
+export interface BuildWorkItemsOptions {
+  context: ContextState;
+  attention: AttentionState;
+  now: string;
+  logger?: Logger;
 }
 
 /**
- * The full deterministic prioritization pipeline: Context in, ranked Work Items
- * out. No AI, no clock — pure and reproducible given `now`. AI summaries are
- * layered on afterward by the application, never here.
+ * The full deterministic prioritization pipeline: reality + the user's attention
+ * in, ranked Work Items out. Pure and reproducible given `now` — no AI, no clock.
  *
- * The optional logger only observes; it never changes the result. It defaults to
- * a no-op so the pipeline stays pure and quiet unless a caller opts in. When the
- * logger is the no-op we skip the trace loops entirely, so the disabled path is
- * genuinely free — no per-item work on every read/rebuild. Trace names are
- * computation-oriented on purpose: this runs on every read/rebuild, so it emits
- * `opportunity.evaluated`/`workitem.ranked`, not a recorded state transition.
+ * Reality-derived Opportunities from every detector are combined, then the
+ * Attention projection decides which are *visible* (the sole suppression stage).
+ * Capacity is estimated from the current attention demand (visible count), so
+ * dismissed/snoozed work stops weighing on the user while hidden.
+ *
+ * The optional logger only observes; it never changes the result and defaults to a
+ * no-op. Trace names are computation-oriented (`opportunity.evaluated`/
+ * `workitem.ranked`) because this runs on every read/rebuild, not on a recorded
+ * state transition.
  */
-export function buildWorkItems(
-  context: ContextState,
-  now: string,
-  logger: Logger = nullLogger,
-): WorkItem[] {
+export function buildWorkItems(options: BuildWorkItemsOptions): WorkItem[] {
+  const { context, attention, now } = options;
+  const logger = options.logger ?? nullLogger;
   const tracing = logger !== nullLogger;
-  const opportunities = detectOpportunities(context, now);
+
+  const opportunities = [...detectOpportunities(context, now), ...detectWorkOpportunities(context, now)];
+  const visible = opportunities.filter((opportunity) => isVisible(opportunity, attention, now));
+
   if (tracing) {
-    for (const opportunity of opportunities) {
+    for (const opportunity of visible) {
       logger.event(LogEvents.OpportunityEvaluated, {
         kind: opportunity.kind,
         subject: subjectKey(opportunity.subject),
@@ -141,8 +187,10 @@ export function buildWorkItems(
       });
     }
   }
-  const capacity = estimateCapacity(now, context);
-  const items = prioritize(opportunities, capacity);
+
+  const capacity = estimateCapacity(now, { activeWorkCount: visible.length });
+  const items = prioritize(visible, capacity);
+
   if (tracing) {
     for (const item of items) {
       logger.event(LogEvents.WorkItemRanked, {
@@ -152,5 +200,6 @@ export function buildWorkItems(
       });
     }
   }
+
   return items;
 }

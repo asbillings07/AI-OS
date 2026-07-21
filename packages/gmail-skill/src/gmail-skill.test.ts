@@ -5,6 +5,7 @@ import {
   OrionRuntime,
   ProjectionHost,
   contextProjection,
+  attentionProjection,
   buildWorkItems,
   type ContextState,
 } from "@orion/core";
@@ -60,8 +61,13 @@ function newRuntime() {
   const store = new SqliteEventStore(":memory:");
   const bus = new InProcessEventBus();
   const context = new ProjectionHost(contextProjection);
-  const runtime = new OrionRuntime({ bus, store, projections: [context as ProjectionHost<unknown>] });
-  return { store, runtime, context };
+  const attention = new ProjectionHost(attentionProjection);
+  const runtime = new OrionRuntime({
+    bus,
+    store,
+    projections: [context as ProjectionHost<unknown>, attention as ProjectionHost<unknown>],
+  });
+  return { store, runtime, context, attention };
 }
 
 describe("Gmail Skill ingestion (ADR-0010)", () => {
@@ -85,11 +91,11 @@ describe("Gmail Skill ingestion (ADR-0010)", () => {
   });
 
   it("drives the full pipeline: fixtures -> Context -> ranked Work Items", async () => {
-    const { runtime, context } = newRuntime();
+    const { runtime, context, attention } = newRuntime();
     await new GmailSkill().ingest(runtime);
 
-    const items = buildWorkItems(context.state as ContextState, NOW);
-    const threadIds = items.map((item) => item.threadId);
+    const items = buildWorkItems({ context: context.state as ContextState, attention: attention.state, now: NOW });
+    const threadIds = items.filter((item) => item.subject.kind === "thread").map((item) => item.subject.id);
 
     // People awaiting replies surface; automated senders produce silence.
     expect(threadIds).toContain("th-dana");

@@ -245,6 +245,28 @@ describe("architecture fitness — package manifests", () => {
 });
 
 /**
+ * Intra-package layering inside @orion/core. The domain vocabulary (events,
+ * payloads) must not depend on the Understanding layer that interprets it —
+ * dependencies point domain -> subject <- understanding, never domain ->
+ * understanding (Eng #8, ADR-0010). This is why SubjectRef lives in its own
+ * neutral module: it is shared by both without creating a cycle.
+ */
+describe("architecture fitness — @orion/core internal layering", () => {
+  it("domain does not import the understanding layer", () => {
+    const domainDir = path.join(repoRoot, "packages", "core", "src", "domain");
+    const offenders: string[] = [];
+    for (const file of collectSourceFiles(domainDir)) {
+      for (const spec of moduleSpecifiers(file, readFileSync(file, "utf8"))) {
+        if (spec.includes("/understanding/") || spec.endsWith("/understanding")) {
+          offenders.push(`${toPosix(path.relative(repoRoot, file))} imports "${spec}"`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});
+
+/**
  * The guardrails must be *seen to fail*. These feed deliberately-violating
  * content to the same checker the real scan uses. A fitness test that has never
  * failed is a decorative smoke alarm.

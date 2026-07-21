@@ -5,7 +5,9 @@ import {
   OrionRuntime,
   ProjectionHost,
   contextProjection,
+  attentionProjection,
   buildWorkItems,
+  type AttentionState,
   type ContextState,
 } from "@orion/core";
 import { githubActivity, githubIdentity, type RawGitHubActivity } from "@orion/fixtures";
@@ -20,8 +22,18 @@ function newRuntime() {
   const store = new SqliteEventStore(":memory:");
   const bus = new InProcessEventBus();
   const context = new ProjectionHost(contextProjection);
-  const runtime = new OrionRuntime({ bus, store, projections: [context as ProjectionHost<unknown>] });
-  return { store, runtime, context };
+  const attention = new ProjectionHost(attentionProjection);
+  const runtime = new OrionRuntime({
+    bus,
+    store,
+    projections: [context as ProjectionHost<unknown>, attention as ProjectionHost<unknown>],
+  });
+  return { store, runtime, context, attention };
+}
+
+/** Build Work Items for a context + attention pair at NOW. */
+function workItems(context: ContextState, attention: AttentionState) {
+  return buildWorkItems({ context, attention, now: NOW });
 }
 
 const reviewFor = (login: string): RawGitHubActivity => ({
@@ -158,9 +170,9 @@ describe("GitHub Skill ingestion (ADR-0010)", () => {
   });
 });
 
-describe("GitHub facts enter understanding but not the decision layer (#45 boundary)", () => {
-  it("adds facts to the log and Context, but surfaces no Work Items", async () => {
-    const { runtime, store, context } = newRuntime();
+describe("GitHub facts flow through the source-neutral decision layer (#46)", () => {
+  it("adds facts to the log and Context, and now surfaces them as Work Items", async () => {
+    const { runtime, store, context, attention } = newRuntime();
     const before = context.state as ContextState;
     // Deep-clone so an in-place mutation during ingestion can't mask a regression
     // (a shared reference would mutate on both sides and still compare equal).
@@ -173,11 +185,10 @@ describe("GitHub facts enter understanding but not the decision layer (#45 bound
     expect(emitted.length).toBeGreaterThan(0);
 
     const after = context.state as ContextState;
-    // ...core now UNDERSTANDS them: they enter Context as domain subjects (#45).
-    // Subjects are persistent things; the log holds occurrences, and several
-    // occurrences can map to one subject (requested/removed/requested again), so
-    // assert every emitted occurrence is traceable via accumulated eventIds
-    // rather than counting subjects == events.
+    // ...core UNDERSTANDS them: they enter Context as domain subjects. Subjects are
+    // persistent things; the log holds occurrences, and several occurrences can map
+    // to one subject, so assert every emitted occurrence is traceable via
+    // accumulated eventIds rather than counting subjects == events.
     const subjects = [
       ...Object.values(after.reviews),
       ...Object.values(after.assignments),
@@ -188,24 +199,32 @@ describe("GitHub facts enter understanding but not the decision layer (#45 bound
     expect(contextEventIds).toEqual(new Set(emitted.map((event) => event.id)));
     // ...the email side of Context is untouched...
     expect({ threads: after.threads, people: after.people }).toEqual(emailBefore);
-    // ...and the decision layer stays thread-gated, so nothing surfaces yet (#46).
-    expect(buildWorkItems(after, NOW)).toEqual([]);
+    // ...and #46 removes the gate: GitHub work now surfaces as Work Items whose
+    // lineage traces to the GitHub events.
+    const items = workItems(after, attention.state);
+    const githubEventIds = new Set(emitted.map((event) => event.id));
+    expect(items.length).toBeGreaterThan(0);
+    expect(items.some((item) => item.createdFromEventIds.some((id) => githubEventIds.has(id)))).toBe(true);
   });
 
-  it("does not let GitHub facts alter Gmail-derived Work Items", async () => {
-    const { runtime, context } = newRuntime();
+  it("adds GitHub Work Items alongside Gmail ones without disturbing the Gmail set", async () => {
+    const { runtime, context, attention } = newRuntime();
     await new GmailSkill().ingest(runtime);
-    const gmailOnly = buildWorkItems(context.state as ContextState, NOW);
+    const gmailOnly = workItems(context.state as ContextState, attention.state);
 
     const github = await new GitHubSkill().ingest(runtime);
     const githubIds = new Set(github.map((e) => e.id));
-    const afterGithub = buildWorkItems(context.state as ContextState, NOW);
+    const afterGithub = workItems(context.state as ContextState, attention.state);
 
-    // Identical rankings, and no work item traces to a GitHub event.
-    expect(afterGithub).toEqual(gmailOnly);
+    // Every Gmail Work Item is still present and unchanged...
+    for (const gmailItem of gmailOnly) {
+      expect(afterGithub).toContainEqual(gmailItem);
+    }
+    // ...and GitHub added new, source-neutral Work Items that trace to its events.
+    expect(afterGithub.length).toBeGreaterThan(gmailOnly.length);
     expect(
       afterGithub.some((item) => item.createdFromEventIds.some((id) => githubIds.has(id))),
-    ).toBe(false);
+    ).toBe(true);
   });
 });
 

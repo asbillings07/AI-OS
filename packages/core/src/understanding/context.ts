@@ -9,9 +9,9 @@ import {
   type MessageReceivedPayload,
   type ReviewRequestedPayload,
   type WorkItemActionPayload,
-  type WorkItemSnoozePayload,
+  isCurrentActionPayload,
 } from "../domain/index.js";
-import { checkSubjectId } from "./subject.js";
+import { checkSubjectId } from "../subject/index.js";
 
 /** A message as remembered inside Context, with a link back to its Event. */
 export interface ObservedMessage {
@@ -290,6 +290,14 @@ function applyThreadStatus(
   status: ThreadStatus,
 ): ContextState {
   const payload = event.payload as WorkItemActionPayload;
+  // Suppression authority moved to the Attention projection in #46. Context no
+  // longer reacts to Subject-based (current) actions at all; it only replays the
+  // legacy thread `status` field so old logs reconstruct byte-identically. Nothing
+  // in ranking reads this field anymore, and this branch is removed once legacy
+  // action events are retired.
+  if (isCurrentActionPayload(payload)) {
+    return state;
+  }
   const existing = state.threads[payload.threadId];
   if (!existing) {
     return state;
@@ -297,7 +305,7 @@ function applyThreadStatus(
   // snoozedUntil is metadata for the snoozed status only. Clear it on any other
   // transition so a stale snooze window never lingers on a handled/dismissed thread.
   const snoozedUntil =
-    status === "snoozed" ? (payload as WorkItemSnoozePayload).snoozedUntil : undefined;
+    status === "snoozed" ? (payload as { snoozedUntil?: string }).snoozedUntil : undefined;
   return {
     ...state,
     threads: {

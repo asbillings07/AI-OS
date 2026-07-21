@@ -6,11 +6,13 @@ import {
   OrionRuntime,
   ProjectionHost,
   contextProjection,
+  attentionProjection,
   buildWorkItems,
   createLogger,
   makeEvent,
   EventTypes,
   LogEvents,
+  type AttentionState,
   type ContextState,
   type Logger,
   type WorkItem,
@@ -22,6 +24,7 @@ import { createAi, type AiCapabilities } from "@orion/ai";
 interface OrionService {
   runtime: OrionRuntime;
   context: ProjectionHost<ContextState>;
+  attention: ProjectionHost<AttentionState>;
   ai: AiCapabilities;
   logger: Logger;
 }
@@ -42,10 +45,11 @@ async function boot(): Promise<OrionService> {
   const store = new SqliteEventStore(dbPath);
   const bus = new InProcessEventBus();
   const context = new ProjectionHost(contextProjection);
+  const attention = new ProjectionHost(attentionProjection);
   const runtime = new OrionRuntime({
     bus,
     store,
-    projections: [context as ProjectionHost<unknown>],
+    projections: [context as ProjectionHost<unknown>, attention as ProjectionHost<unknown>],
     logger,
   });
 
@@ -63,7 +67,7 @@ async function boot(): Promise<OrionService> {
     onUsage: (usage) => logger.event(LogEvents.AiInvoked, { ...usage }),
   });
 
-  return { runtime, context, ai, logger };
+  return { runtime, context, attention, ai, logger };
 }
 
 function getService(): Promise<OrionService> {
@@ -86,9 +90,9 @@ export interface MissionControlView {
  * only — every item's `reason`/`evidence` already explains itself without AI.
  */
 export async function readMissionControl(): Promise<MissionControlView> {
-  const { context, ai, logger } = await getService();
+  const { context, attention, ai, logger } = await getService();
   const now = new Date().toISOString();
-  const items = buildWorkItems(context.state, now, logger);
+  const items = buildWorkItems({ context: context.state, attention: attention.state, now, logger });
 
   // Follow-up (not in v0.1): live-provider summaries are recomputed per render.
   // Before enabling live AI by default, persist or cache advisory summaries by
@@ -96,13 +100,16 @@ export async function readMissionControl(): Promise<MissionControlView> {
   // the deterministic default; a cost/latency surprise with a real provider.
   const enriched = await Promise.all(
     items.map(async (item): Promise<WorkItem> => {
-      const thread = context.state.threads[item.threadId];
+      // Summaries apply where a conversation body exists — a domain capability
+      // distinction (this Subject is a conversation), not a vendor branch.
+      if (item.subject.kind !== "thread") return item;
+      const thread = context.state.threads[item.subject.id];
       const lastMessage = thread?.messages[thread.messages.length - 1];
       if (!lastMessage) return item;
       try {
         const { summary, confidence } = await ai.summarize({
           text: lastMessage.body,
-          purpose: "email triage",
+          purpose: "conversation triage",
           maxSentences: 1,
         });
         return { ...item, summary, summaryConfidence: confidence };
@@ -125,41 +132,49 @@ export type WorkItemAction = (typeof WORK_ITEM_ACTIONS)[number];
 
 /**
  * Record a user's decision as a new Event. This closes the loop: the event
- * updates Context, which changes prioritization on the next read (ADR-0002,
- * ADR-0005, ADR-0007, ADR-0008, ADR-0009 all at once).
+ * updates the Attention projection, which changes what's visible on the next read
+ * (ADR-0002, ADR-0007, ADR-0008, ADR-0009, ADR-0012 all at once).
  *
- * The trust boundary is here: we resolve the Work Item against what is actually
- * surfaced right now and verify both ids before writing anything. A forged or
- * stale id records nothing (never pollute the immutable log with unverified
- * user events) and returns false. Duplicate submissions are intentionally
- * benign: once acted/snoozed/dismissed, the thread is no longer surfaced, so a
- * repeat submit simply resolves to nothing and no-ops.
+ * The trust boundary is here: the client submits only `workItemId` + `action`. We
+ * re-resolve it against what is *currently visible*, and derive the Subject and the
+ * attention basis from that surfaced Work Item — never from client input. We verify
+ * the item is visible, its Subject is valid, and its basis is nonempty before
+ * writing anything. A forged or stale id records nothing (never pollute the
+ * immutable log) and returns false. Duplicate submissions are benign: once acted/
+ * snoozed/dismissed the item is no longer visible, so a repeat resolves to nothing.
  *
  * Returns whether an event was recorded.
  */
-export async function recordAction(
-  workItemId: string,
-  threadId: string,
-  action: WorkItemAction,
-): Promise<boolean> {
-  const { runtime, context, logger } = await getService();
+export async function recordAction(workItemId: string, action: WorkItemAction): Promise<boolean> {
+  const { runtime, context, attention, logger } = await getService();
 
-  const surfaced = buildWorkItems(context.state, new Date().toISOString(), logger).find(
-    (item) => item.id === workItemId && item.threadId === threadId,
-  );
-  if (!surfaced) {
+  const surfaced = buildWorkItems({
+    context: context.state,
+    attention: attention.state,
+    now: new Date().toISOString(),
+    logger,
+  }).find((item) => item.id === workItemId);
+
+  // Only act on a currently-visible item with a valid Subject and a nonempty basis.
+  if (!surfaced || !surfaced.subject?.id || surfaced.attentionBasisEventIds.length === 0) {
     return false;
   }
+
+  const base = {
+    workItemId,
+    subject: surfaced.subject,
+    basisEventIds: surfaced.attentionBasisEventIds,
+  } as const;
 
   switch (action) {
     case "acted":
       await runtime.record(
-        makeEvent({ type: EventTypes.WorkItemActedOn, source: "user", payload: { workItemId, threadId } }),
+        makeEvent({ type: EventTypes.WorkItemActedOn, source: "user", payload: base }),
       );
       break;
     case "dismissed":
       await runtime.record(
-        makeEvent({ type: EventTypes.WorkItemDismissed, source: "user", payload: { workItemId, threadId } }),
+        makeEvent({ type: EventTypes.WorkItemDismissed, source: "user", payload: base }),
       );
       break;
     case "snoozed": {
@@ -168,7 +183,7 @@ export async function recordAction(
         makeEvent({
           type: EventTypes.WorkItemSnoozed,
           source: "user",
-          payload: { workItemId, threadId, snoozedUntil },
+          payload: { ...base, snoozedUntil },
         }),
       );
       break;
@@ -177,6 +192,10 @@ export async function recordAction(
 
   // Only after the record durably succeeds — the trace must not claim an action
   // was recorded if persistence threw.
-  logger.event(LogEvents.UserActionRecorded, { action, workItemId, threadId });
+  logger.event(LogEvents.UserActionRecorded, {
+    action,
+    workItemId,
+    subject: `${surfaced.subject.kind}:${surfaced.subject.id}`,
+  });
   return true;
 }

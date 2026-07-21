@@ -5,11 +5,14 @@ import {
   OrionRuntime,
   ProjectionHost,
   contextProjection,
+  attentionProjection,
   buildWorkItems,
   makeEvent,
   EventTypes,
+  type AttentionState,
   type ContextState,
   type EventStore,
+  type WorkItem,
 } from "@orion/core";
 import { GmailSkill } from "./skill.js";
 
@@ -18,33 +21,46 @@ const NOW = "2026-07-15T17:00:00.000Z";
 function runtimeOver(store: EventStore) {
   const bus = new InProcessEventBus();
   const context = new ProjectionHost(contextProjection);
-  const runtime = new OrionRuntime({ bus, store, projections: [context as ProjectionHost<unknown>] });
-  return { runtime, context };
+  const attention = new ProjectionHost(attentionProjection);
+  const runtime = new OrionRuntime({
+    bus,
+    store,
+    projections: [context as ProjectionHost<unknown>, attention as ProjectionHost<unknown>],
+  });
+  const items = (): WorkItem[] =>
+    buildWorkItems({
+      context: context.state as ContextState,
+      attention: attention.state as AttentionState,
+      now: NOW,
+    });
+  return { runtime, context, attention, items };
 }
 
-describe("the decision loop (ADR-0002/0005/0007/0008/0009)", () => {
-  it("a user action feeds back, updates Context, and re-prioritizes", async () => {
+/** The current action payload the server would derive from a surfaced Work Item. */
+function actionPayload(item: WorkItem) {
+  return { workItemId: item.id, subject: item.subject, basisEventIds: item.attentionBasisEventIds };
+}
+
+describe("the decision loop (ADR-0002/0005/0007/0008/0009/0012)", () => {
+  it("a user action feeds back, updates Attention, and re-prioritizes", async () => {
     const store = new SqliteEventStore(":memory:");
-    const { runtime, context } = runtimeOver(store);
+    const { runtime, items } = runtimeOver(store);
     await runtime.rebuild();
     await new GmailSkill().ingest(runtime);
 
-    const before = buildWorkItems(context.state as ContextState, NOW);
-    const sam = before.find((item) => item.threadId === "th-sam");
+    const before = items();
+    const sam = before.find((item) => item.subject.id === "th-sam");
     expect(sam).toBeDefined();
     expect(sam?.band).toBe("needs_attention");
 
-    // The user handles Sam's thread — a new Event flows back into the system.
+    // The user handles Sam's thread — a new Event flows back into the system,
+    // scoped to exactly the revision they saw.
     await runtime.record(
-      makeEvent({
-        type: EventTypes.WorkItemActedOn,
-        source: "user",
-        payload: { workItemId: sam!.id, threadId: "th-sam" },
-      }),
+      makeEvent({ type: EventTypes.WorkItemActedOn, source: "user", payload: actionPayload(sam!) }),
     );
 
-    const after = buildWorkItems(context.state as ContextState, NOW);
-    expect(after.find((item) => item.threadId === "th-sam")).toBeUndefined();
+    const after = items();
+    expect(after.find((item) => item.subject.id === "th-sam")).toBeUndefined();
     expect(after.length).toBe(before.length - 1);
   });
 
@@ -53,18 +69,16 @@ describe("the decision loop (ADR-0002/0005/0007/0008/0009)", () => {
     const first = runtimeOver(store);
     await first.runtime.rebuild();
     await new GmailSkill().ingest(first.runtime);
+
+    const fyi = first.items().find((item) => item.subject.id === "th-fyi");
+    expect(fyi).toBeDefined();
     await first.runtime.record(
-      makeEvent({
-        type: EventTypes.WorkItemDismissed,
-        source: "user",
-        payload: { workItemId: "wi-th-fyi", threadId: "th-fyi" },
-      }),
+      makeEvent({ type: EventTypes.WorkItemDismissed, source: "user", payload: actionPayload(fyi!) }),
     );
 
     // Fresh process over the same log: replay must reconstruct the same state.
     const second = runtimeOver(store);
     await second.runtime.rebuild();
-    const rebuilt = buildWorkItems(second.context.state as ContextState, NOW);
-    expect(rebuilt.find((item) => item.threadId === "th-fyi")).toBeUndefined();
+    expect(second.items().find((item) => item.subject.id === "th-fyi")).toBeUndefined();
   });
 });
