@@ -21,12 +21,15 @@ export const githubManifest = {
   consumes: [],
 } as const satisfies SkillManifest;
 
-export interface GitHubSkillOptions {
-  /** Defaults to captured fixtures (offline, key-free). */
-  source?: GitHubSource;
-  /** Who "the user" is, for deciding which activity is actionable. */
-  identity?: GitHubIdentity;
-}
+/**
+ * Either use the fixture default (identity optional; defaults to the fixture
+ * user) or bring your own Source — in which case an explicit identity is
+ * REQUIRED. Silently reusing the fixture identity (`{ login: "me" }`) against a
+ * real Source would discard nearly everything, so the type forbids it.
+ */
+export type GitHubSkillOptions =
+  | { readonly source?: undefined; readonly identity?: GitHubIdentity }
+  | { readonly source: GitHubSource; readonly identity: GitHubIdentity };
 
 /**
  * The GitHub Skill (ADR-0010): a second, structurally different Source that joins
@@ -53,7 +56,16 @@ export class GitHubSkill {
     return this.#source.name;
   }
 
-  /** Fetch, normalize, and record all actionable activity as domain events. */
+  /**
+   * Fetch, normalize, and record all actionable activity as domain events.
+   *
+   * The returned array is the events normalized and *submitted* during this call
+   * — not necessarily events newly appended to the log. Because ids are
+   * occurrence-based and the store is idempotent, a duplicate submission is
+   * still returned here even though it added nothing. Callers that need the
+   * number of *new* facts should compare store counts before/after (as
+   * `bootstrap` does), not use `events.length`.
+   */
   async ingest(runtime: OrionRuntime): Promise<EventEnvelope[]> {
     const activity = await this.#source.fetchActivity();
     const events: EventEnvelope[] = [];

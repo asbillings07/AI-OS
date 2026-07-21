@@ -74,7 +74,7 @@ const OTHER = "casey"; // a different collaborator, for the "not addressed to me
  * project referenced by the Gmail `th-gh` notification fixture, foreshadowing
  * the cross-source correlation work in #46.
  */
-export const githubActivity: RawGitHubActivity[] = [
+export const githubActivity = [
   {
     kind: "review_request",
     activityId: "gh-rev-128",
@@ -146,4 +146,4 @@ export const githubActivity: RawGitHubActivity[] = [
     conclusion: "success",
     owner: "me",
   },
-];
+] as const satisfies readonly RawGitHubActivity[];

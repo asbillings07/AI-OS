@@ -23,6 +23,16 @@ function eventId(raw: RawGitHubActivity): string {
 }
 
 /**
+ * Compare two source-scoped logins. External identity matching must not hinge on
+ * incidental casing/whitespace between configured and retrieved data, so we
+ * normalize before comparing. (This is still same-namespace matching only — not
+ * cross-source person resolution.)
+ */
+function sameLogin(left: string, right: string): boolean {
+  return left.trim().toLowerCase() === right.trim().toLowerCase();
+}
+
+/**
  * Turn one raw GitHub activity into a domain fact, or `null` when it is not
  * actionable for the configured user. Silence at the boundary is deliberate:
  * a review/assignment addressed to someone else, or a passing check, produces no
@@ -37,7 +47,7 @@ export function normalizeActivity(
 ): NormalizedGitHubEvent | null {
   switch (raw.kind) {
     case "review_request": {
-      if (raw.requestedReviewer !== identity.login) return null;
+      if (!sameLogin(raw.requestedReviewer, identity.login)) return null;
       const payload: ReviewRequestedPayload = {
         reviewRequestId: raw.activityId,
         changeId: `${raw.repo}#${raw.pullNumber}`,
@@ -50,7 +60,7 @@ export function normalizeActivity(
       return { type: EventTypes.ReviewRequested, payload, id: eventId(raw), occurredAt: raw.occurredAt };
     }
     case "assignment": {
-      if (raw.assignee !== identity.login) return null;
+      if (!sameLogin(raw.assignee, identity.login)) return null;
       const payload: AssignmentReceivedPayload = {
         assignmentId: raw.activityId,
         itemId: `${raw.repo}#${raw.issueNumber}`,
@@ -64,7 +74,7 @@ export function normalizeActivity(
     }
     case "check_run": {
       // Only the user's own failing checks are their concern.
-      if (raw.conclusion !== "failure" || raw.owner !== identity.login) return null;
+      if (raw.conclusion !== "failure" || !sameLogin(raw.owner, identity.login)) return null;
       const payload: CheckFailedPayload = {
         checkId: raw.activityId,
         changeId: `${raw.repo}#${raw.pullNumber}`,

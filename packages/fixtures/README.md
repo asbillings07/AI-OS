@@ -22,15 +22,20 @@ computed at a fixed `now` (the slice uses `2026-07-15T17:00:00Z`).
 | `th-sam` | Sam Rivera (partner.io) | Contract draft → Re: Contract draft | Two messages, one thread, a follow-up bump | **Needs attention** — known correspondent + follow-up raises value |
 | `th-fyi` | Jordan Blake | Quick idea to share (FYI) | A message with **no ask** ("nothing needed from you") | Low value → **Can wait** |
 | `th-news` | The Weekly (`no-reply@…`) | Your Weekly Digest | Automated newsletter | **Silence** — no opportunity |
-| `th-gh` | GitHub (`notifications@github.com`) | Pull request merged | Automated notification (and a future cross-source correlation case) | **Silence** — no opportunity |
+| `th-gh` | GitHub (`notifications@github.com`) | Pull request merged | Automated notification | **Silence** — no opportunity |
+| `th-gh-review-128` | GitHub (`notifications@github.com`) | Review requested: Add retry to the event store | Automated notification that **mirrors** the GitHub `gh-rev-128` fact (same `acme/orion#128`) | **Silence** — the GitHub Skill represents this request; the email must not double it |
 
 Notes:
 
-- **Silence is a valid output.** `th-news` and `th-gh` produce no Work Item;
-  proving Orion stays quiet is as important as proving it surfaces things.
-- **`th-gh`** foreshadows cross-source correlation (milestone _Architecture
-  Proven Twice_): the same GitHub fact may later arrive directly from a GitHub
-  Skill, and Orion must not present both as separate work.
+- **Silence is a valid output.** `th-news`, `th-gh`, and `th-gh-review-128`
+  produce no Work Item; proving Orion stays quiet is as important as proving it
+  surfaces things.
+- **`th-gh-review-128` + `gh-rev-128` are a real correlation pair.** The email
+  notification and the GitHub `ReviewRequested` fact describe the *same*
+  underlying review on `acme/orion#128`. In v0.1 the email is silent (automated
+  sender) and only the GitHub Skill surfaces the request, so no duplication
+  occurs yet — but this is the concrete specimen #46 will use to prove that two
+  representations of one occurrence collapse into a single Work Item.
 - The exact bands depend on Capacity (time of day) and the prioritization
   weights; the catalog describes intent, and the tests pin the specifics.
 

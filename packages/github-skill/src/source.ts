@@ -16,19 +16,23 @@ import { githubActivity, type RawGitHubActivity } from "@orion/fixtures";
  */
 export interface GitHubSource {
   readonly name: string;
-  fetchActivity(): Promise<RawGitHubActivity[]>;
+  fetchActivity(): Promise<readonly RawGitHubActivity[]>;
 }
 
 /** The default, offline source: captured fixtures. No network, no keys. */
 export class FixtureGitHubSource implements GitHubSource {
   readonly name = "github-fixtures";
-  readonly #activity: RawGitHubActivity[];
+  readonly #activity: readonly RawGitHubActivity[];
 
-  constructor(activity: RawGitHubActivity[] = githubActivity) {
-    this.#activity = activity;
+  constructor(activity: readonly RawGitHubActivity[] = githubActivity) {
+    // Copy on construction so a later mutation of the caller's array (or the
+    // exported canonical fixtures) can't change this Source's feed.
+    this.#activity = [...activity];
   }
 
-  async fetchActivity(): Promise<RawGitHubActivity[]> {
-    return this.#activity;
+  async fetchActivity(): Promise<readonly RawGitHubActivity[]> {
+    // Copy on return so a consumer can't mutate our internal collection and turn
+    // future ingestions silent — the fixtures are load-bearing ground truth.
+    return [...this.#activity];
   }
 }

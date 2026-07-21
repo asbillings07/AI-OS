@@ -147,4 +147,19 @@ export const gmailMessages: RawGmailMessage[] = [
     date: "2026-07-15T09:00:00.000Z",
     body: "Your pull request was merged into main. View it on GitHub.",
   }),
+  gmailMessage({
+    // The email mirror of the GitHub `gh-rev-128` ReviewRequested fact: same
+    // change (acme/orion#128), arriving as an automated notification. It stays
+    // SILENT under Gmail understanding (no-reply sender), while the GitHub Skill
+    // emits ReviewRequested for the same underlying request. Two representations
+    // of one occurrence — the concrete specimen cross-source correlation (#46)
+    // must eventually collapse into a single Work Item.
+    id: "g-gh-review-128",
+    threadId: "th-gh-review-128",
+    from: "GitHub <notifications@github.com>",
+    to: ME,
+    subject: "Review requested: Add retry to the event store",
+    date: "2026-07-15T13:05:00.000Z",
+    body: "Dana requested your review on acme/orion#128. https://github.com/acme/orion/pull/128",
+  }),
 ];

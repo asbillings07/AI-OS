@@ -54,9 +54,20 @@ describe("GitHub normalization (Eng #8: the vendor shape stops here)", () => {
     expect(normalizeActivity(reviewFor("casey"), githubIdentity)).toBeNull();
   });
 
-  it("emits AssignmentReceived for an item assigned to the user", () => {
+  it("emits AssignmentReceived with a domain-generic payload for the user's item", () => {
     const raw = githubActivity.find((a) => a.activityId === "gh-assign-204")!;
-    expect(normalizeActivity(raw, githubIdentity)?.type).toBe("AssignmentReceived");
+    const result = normalizeActivity(raw, githubIdentity)!;
+    expect(result.type).toBe("AssignmentReceived");
+    expect(result.id).toBe("github:assignment:gh-assign-204");
+    expect(result.payload).toEqual({
+      assignmentId: "gh-assign-204",
+      itemId: "acme/orion#204",
+      title: "Flaky prioritization test on CI",
+      assignedBy: { externalId: "priya", displayName: "Priya Nair" },
+      location: "acme/orion#204",
+      url: "https://github.com/acme/orion/issues/204",
+      assignedAt: "2026-07-15T12:00:00.000Z",
+    });
   });
 
   it("stays silent for an assignment to someone else", () => {
@@ -64,11 +75,40 @@ describe("GitHub normalization (Eng #8: the vendor shape stops here)", () => {
     expect(normalizeActivity(raw, githubIdentity)).toBeNull();
   });
 
-  it("emits CheckFailed only for the user's own failing check", () => {
-    const failed = githubActivity.find((a) => a.activityId === "gh-check-991")!;
+  it("emits CheckFailed with a domain-generic payload for the user's own failure", () => {
+    const raw = githubActivity.find((a) => a.activityId === "gh-check-991")!;
+    const result = normalizeActivity(raw, githubIdentity)!;
+    expect(result.type).toBe("CheckFailed");
+    expect(result.id).toBe("github:check_run:gh-check-991");
+    expect(result.payload).toEqual({
+      checkId: "gh-check-991",
+      changeId: "acme/orion#126",
+      checkName: "verify",
+      title: 'verify failed on "Cross-source prioritization spike"',
+      location: "acme/orion#126",
+      url: "https://github.com/acme/orion/pull/126/checks",
+      failedAt: "2026-07-15T14:20:00.000Z",
+    });
+  });
+
+  it("stays silent for a passing check, or a failing check on someone else's change", () => {
     const passed = githubActivity.find((a) => a.activityId === "gh-check-992")!;
-    expect(normalizeActivity(failed, githubIdentity)?.type).toBe("CheckFailed");
     expect(normalizeActivity(passed, githubIdentity)).toBeNull();
+
+    // Failure predicate has two halves; this isolates the ownership half.
+    const othersFailure: RawGitHubActivity = {
+      kind: "check_run",
+      activityId: "check-other",
+      occurredAt: "2026-07-15T14:00:00.000Z",
+      repo: "acme/orion",
+      url: "https://github.com/acme/orion/pull/999/checks",
+      pullNumber: 999,
+      changeTitle: "Someone else's change",
+      name: "verify",
+      conclusion: "failure",
+      owner: "casey",
+    };
+    expect(normalizeActivity(othersFailure, githubIdentity)).toBeNull();
   });
 
   it("keeps the payload timestamp equal to the occurrence time", () => {
@@ -89,7 +129,9 @@ describe("GitHub Skill ingestion (ADR-0010)", () => {
     expect(events).toHaveLength(3);
     expect(store.count()).toBe(3);
     expect(events.every((e) => e.source === githubManifest.source)).toBe(true);
-    expect(events.every((e) => (githubManifest.produces as readonly string[]).includes(e.type))).toBe(true);
+    // Exact coverage: the fixtures exercise every declared producer type, and
+    // nothing undeclared is emitted.
+    expect(new Set(events.map((e) => e.type))).toEqual(new Set(githubManifest.produces));
   });
 
   it("is idempotent: the same occurrence fetched twice yields one event", async () => {
@@ -108,7 +150,10 @@ describe("GitHub Skill ingestion (ADR-0010)", () => {
     const first: RawGitHubActivity = { ...base, activityId: "occ-1" };
     const second: RawGitHubActivity = { ...base, activityId: "occ-2" };
     const { runtime, store } = newRuntime();
-    await new GitHubSkill({ source: new FixtureGitHubSource([first, second]) }).ingest(runtime);
+    await new GitHubSkill({
+      source: new FixtureGitHubSource([first, second]),
+      identity: githubIdentity,
+    }).ingest(runtime);
     expect(store.count()).toBe(2);
   });
 });
