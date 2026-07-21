@@ -24,32 +24,37 @@ async function main(): Promise<void> {
   mkdirSync(path.dirname(dbPath), { recursive: true });
 
   const store = new SqliteEventStore(dbPath);
-  const bus = new InProcessEventBus();
-  const context = new ProjectionHost(contextProjection);
-  const logger = createLogger();
-  const runtime = new OrionRuntime({
-    bus,
-    store,
-    projections: [context as ProjectionHost<unknown>],
-    logger,
-  });
+  try {
+    const bus = new InProcessEventBus();
+    const context = new ProjectionHost(contextProjection);
+    const logger = createLogger();
+    const runtime = new OrionRuntime({
+      bus,
+      store,
+      projections: [context as ProjectionHost<unknown>],
+      logger,
+    });
 
-  await runtime.rebuild();
-  const before = store.count();
-  if (before === 0) {
-    const ingested = await new GmailSkill().ingest(runtime);
-    console.log(`Seeded ${ingested.length} messages from Gmail fixtures.`);
-  } else {
-    console.log(`Log already has ${before} event(s); left as-is.`);
+    await runtime.rebuild();
+    const before = store.count();
+    if (before === 0) {
+      const ingested = await new GmailSkill().ingest(runtime);
+      console.log(`Seeded ${ingested.length} messages from Gmail fixtures.`);
+    } else {
+      console.log(`Log already has ${before} event(s); left as-is.`);
+    }
+
+    const items = buildWorkItems(context.state, new Date().toISOString(), logger);
+    console.log(`\nEvent log:  ${dbPath}`);
+    console.log(`Events:     ${store.count()}`);
+    console.log(`Threads:    ${Object.keys(context.state.threads).length}`);
+    console.log(`Work items: ${items.length}`);
+    console.log(`\nStart Mission Control with:  npm run dev  (in apps/mission-control)`);
+  } finally {
+    // Always release the better-sqlite3 handle (and WAL lock), even on error,
+    // so the process exits promptly instead of hanging.
+    store.close();
   }
-
-  const items = buildWorkItems(context.state, new Date().toISOString(), logger);
-  console.log(`\nEvent log:  ${dbPath}`);
-  console.log(`Events:     ${store.count()}`);
-  console.log(`Threads:    ${Object.keys(context.state.threads).length}`);
-  console.log(`Work items: ${items.length}`);
-  console.log(`\nStart Mission Control with:  npm run dev  (in apps/mission-control)`);
-  store.close();
 }
 
 main().catch((error) => {
