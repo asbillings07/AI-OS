@@ -32,10 +32,11 @@ Notes:
   surfaces things.
 - **`th-gh-review-128` + `gh-rev-128` are a real correlation pair.** The email
   notification and the GitHub `ReviewRequested` fact describe the *same*
-  underlying review on `acme/orion#128`. In v0.1 the email is silent (automated
-  sender) and only the GitHub Skill surfaces the request, so no duplication
-  occurs yet — but this is the concrete specimen #46 will use to prove that two
-  representations of one occurrence collapse into a single Work Item.
+  underlying review on `acme/orion#128`. In #44 the email remains silent while
+  the GitHub Skill records the direct `ReviewRequested` fact; nothing surfaces
+  yet, since GitHub understanding and Work Items are deferred to #45. Once GitHub
+  understanding is added, #46 must ensure both representations produce only one
+  Work Item.
 - The exact bands depend on Capacity (time of day) and the prioritization
   weights; the catalog describes intent, and the tests pin the specifics.
 
