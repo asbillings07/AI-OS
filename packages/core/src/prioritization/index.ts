@@ -2,6 +2,7 @@ import type { ContextState } from "../understanding/context.js";
 import { detectOpportunities, type Opportunity } from "../opportunity/index.js";
 import { estimateCapacity, type Capacity } from "../capacity/index.js";
 import type { Signal } from "../understanding/signals.js";
+import { LogEvents, nullLogger, type Logger } from "../observability/index.js";
 
 export type WorkItemBand = "needs_attention" | "can_wait";
 
@@ -105,9 +106,31 @@ export function prioritize(
  * The full deterministic prioritization pipeline: Context in, ranked Work Items
  * out. No AI, no clock — pure and reproducible given `now`. AI summaries are
  * layered on afterward by the application, never here.
+ *
+ * The optional logger only observes; it never changes the result. It defaults to
+ * a no-op so the pipeline stays pure and quiet unless a caller opts in.
  */
-export function buildWorkItems(context: ContextState, now: string): WorkItem[] {
+export function buildWorkItems(
+  context: ContextState,
+  now: string,
+  logger: Logger = nullLogger,
+): WorkItem[] {
   const opportunities = detectOpportunities(context, now);
+  for (const opportunity of opportunities) {
+    logger.event(LogEvents.OpportunityDetected, {
+      kind: opportunity.kind,
+      threadId: opportunity.threadId,
+      value: opportunity.value,
+    });
+  }
   const capacity = estimateCapacity(now, context);
-  return prioritize(opportunities, capacity, context);
+  const items = prioritize(opportunities, capacity, context);
+  for (const item of items) {
+    logger.event(LogEvents.WorkItemSurfaced, {
+      id: item.id,
+      band: item.band,
+      priority: item.priority,
+    });
+  }
+  return items;
 }

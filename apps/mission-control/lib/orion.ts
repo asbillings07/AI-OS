@@ -7,9 +7,12 @@ import {
   ProjectionHost,
   contextProjection,
   buildWorkItems,
+  createLogger,
   makeEvent,
   EventTypes,
+  LogEvents,
   type ContextState,
+  type Logger,
   type WorkItem,
 } from "@orion/core";
 import { GmailSkill } from "@orion/gmail-skill";
@@ -19,6 +22,7 @@ interface OrionService {
   runtime: OrionRuntime;
   context: ProjectionHost<ContextState>;
   ai: AiCapabilities;
+  logger: Logger;
 }
 
 // Cache the service on globalThis so it survives Next's dev HMR and is shared
@@ -26,16 +30,22 @@ interface OrionService {
 const globalForOrion = globalThis as unknown as { __orion?: Promise<OrionService> };
 
 async function boot(): Promise<OrionService> {
-  const dataDir = path.join(process.cwd(), ".data");
-  mkdirSync(dataDir, { recursive: true });
+  // ORION_DB_PATH lets the CLI tools (bootstrap/reset/rebuild/inspect) operate on
+  // the same log the app reads. Default lives under the app dir.
+  const dbPath = process.env.ORION_DB_PATH ?? path.join(process.cwd(), ".data", "orion.db");
+  mkdirSync(path.dirname(dbPath), { recursive: true });
 
-  const store = new SqliteEventStore(path.join(dataDir, "orion.db"));
+  // Off unless ORION_LOG is set; then a structured trace of the loop hits stderr.
+  const logger = createLogger();
+
+  const store = new SqliteEventStore(dbPath);
   const bus = new InProcessEventBus();
   const context = new ProjectionHost(contextProjection);
   const runtime = new OrionRuntime({
     bus,
     store,
     projections: [context as ProjectionHost<unknown>],
+    logger,
   });
 
   // Rebuild understanding from the log (ADR-0009). If the log is empty, seed it
@@ -45,7 +55,12 @@ async function boot(): Promise<OrionService> {
     await new GmailSkill().ingest(runtime);
   }
 
-  return { runtime, context, ai: createAi() };
+  // The AI chokepoint reports usage; route it to the same structured trace.
+  const ai = createAi({
+    onUsage: (usage) => logger.event(LogEvents.AiInvoked, { ...usage }),
+  });
+
+  return { runtime, context, ai, logger };
 }
 
 function getService(): Promise<OrionService> {
@@ -68,9 +83,9 @@ export interface MissionControlView {
  * only — every item's `reason`/`evidence` already explains itself without AI.
  */
 export async function readMissionControl(): Promise<MissionControlView> {
-  const { context, ai } = await getService();
+  const { context, ai, logger } = await getService();
   const now = new Date().toISOString();
-  const items = buildWorkItems(context.state, now);
+  const items = buildWorkItems(context.state, now, logger);
 
   // Follow-up (not in v0.1): live-provider summaries are recomputed per render.
   // Before enabling live AI by default, persist or cache advisory summaries by
@@ -124,7 +139,7 @@ export async function recordAction(
   threadId: string,
   action: WorkItemAction,
 ): Promise<boolean> {
-  const { runtime, context } = await getService();
+  const { runtime, context, logger } = await getService();
 
   const surfaced = buildWorkItems(context.state, new Date().toISOString()).find(
     (item) => item.id === workItemId && item.threadId === threadId,
@@ -132,6 +147,8 @@ export async function recordAction(
   if (!surfaced) {
     return false;
   }
+
+  logger.event(LogEvents.UserActionRecorded, { action, workItemId, threadId });
 
   switch (action) {
     case "acted":
