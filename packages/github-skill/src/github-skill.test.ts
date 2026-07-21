@@ -162,7 +162,9 @@ describe("GitHub facts enter understanding but not the decision layer (#45 bound
   it("adds facts to the log and Context, but surfaces no Work Items", async () => {
     const { runtime, store, context } = newRuntime();
     const before = context.state as ContextState;
-    const emailBefore = { threads: before.threads, people: before.people };
+    // Deep-clone so an in-place mutation during ingestion can't mask a regression
+    // (a shared reference would mutate on both sides and still compare equal).
+    const emailBefore = structuredClone({ threads: before.threads, people: before.people });
 
     const emitted = await new GitHubSkill().ingest(runtime);
 

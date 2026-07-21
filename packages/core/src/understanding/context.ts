@@ -129,7 +129,15 @@ function occurrenceWins(
 ): boolean {
   const incoming = new Date(incomingAt).getTime();
   const current = new Date(currentAt).getTime();
-  if (incoming !== current) {
+  const incomingValid = Number.isFinite(incoming);
+  const currentValid = Number.isFinite(current);
+  // A valid timestamp always beats a malformed one, so a corrupt fact can never
+  // pin stale display fields in place. Fall through to the id tie-break only when
+  // both sides are comparable (both valid and equal, or both invalid).
+  if (incomingValid !== currentValid) {
+    return incomingValid;
+  }
+  if (incomingValid && incoming !== current) {
     return incoming > current;
   }
   return incomingEventId > currentEventId;
