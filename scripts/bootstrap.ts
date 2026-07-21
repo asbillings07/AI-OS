@@ -26,11 +26,12 @@ async function main(): Promise<void> {
   const store = new SqliteEventStore(dbPath);
   const bus = new InProcessEventBus();
   const context = new ProjectionHost(contextProjection);
+  const logger = createLogger();
   const runtime = new OrionRuntime({
     bus,
     store,
     projections: [context as ProjectionHost<unknown>],
-    logger: createLogger(),
+    logger,
   });
 
   await runtime.rebuild();
@@ -42,7 +43,7 @@ async function main(): Promise<void> {
     console.log(`Log already has ${before} event(s); left as-is.`);
   }
 
-  const items = buildWorkItems(context.state, new Date().toISOString());
+  const items = buildWorkItems(context.state, new Date().toISOString(), logger);
   console.log(`\nEvent log:  ${dbPath}`);
   console.log(`Events:     ${store.count()}`);
   console.log(`Threads:    ${Object.keys(context.state.threads).length}`);

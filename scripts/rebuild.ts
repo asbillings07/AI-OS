@@ -27,15 +27,16 @@ async function main(): Promise<void> {
   const store = new SqliteEventStore(dbPath);
   const bus = new InProcessEventBus();
   const context = new ProjectionHost(contextProjection);
+  const logger = createLogger();
   const runtime = new OrionRuntime({
     bus,
     store,
     projections: [context as ProjectionHost<unknown>],
-    logger: createLogger(),
+    logger,
   });
 
   await runtime.rebuild();
-  const items = buildWorkItems(context.state, new Date().toISOString());
+  const items = buildWorkItems(context.state, new Date().toISOString(), logger);
   console.log(`Replayed ${store.count()} event(s) from ${dbPath}`);
   console.log(`Reconstructed ${Object.keys(context.state.threads).length} thread(s), ${items.length} work item(s).`);
   store.close();
