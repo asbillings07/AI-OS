@@ -16,11 +16,23 @@ import { subjectKey, type SubjectRef } from "./subject.js";
  * but cannot become Work Items yet.
  */
 
-function computeValue(signals: readonly Signal[]): number {
-  // The strongest significance sets the base; corroborating signals raise it.
-  const base = Math.max(...signals.map((signal) => signal.strength));
-  const boost = signals.reduce((sum, signal) => sum + signal.strength * 0.1, 0);
-  return Math.min(1, base * 0.7 + boost);
+function strength(signals: readonly Signal[], kind: Signal["kind"]): number {
+  return signals.find((signal) => signal.kind === kind)?.strength ?? 0;
+}
+
+/**
+ * Opportunity value answers only "is there value in acting?". It is derived
+ * SOLELY from the subject-defining significance Signal. Commitment and Aging stay
+ * attached to the Opportunity (for explanation and later prioritization) but must
+ * NOT inflate value — otherwise #46 would double-count them as responsibility and
+ * urgency when it feeds these Opportunities through the Prioritization Engine.
+ */
+function opportunityValue(signals: readonly Signal[]): number {
+  return Math.max(
+    strength(signals, "PendingReview"),
+    strength(signals, "Assigned"),
+    strength(signals, "CheckFailing"),
+  );
 }
 
 function titleFor(context: ContextState, subject: SubjectRef): string {
@@ -50,7 +62,7 @@ export function detectWorkOpportunities(context: ContextState, now: string): Opp
   const opportunities: Opportunity[] = [];
   for (const group of bySubject.values()) {
     const subject = group[0]!.subject;
-    const value = computeValue(group);
+    const value = opportunityValue(group);
     const title = titleFor(context, subject);
     const evidence = group.map((signal) => signal.evidence);
     const createdFromEventIds = [...new Set(group.flatMap((signal) => signal.sourceEventIds))];

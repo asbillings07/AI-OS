@@ -83,7 +83,7 @@ export function detectOpportunities(context: ContextState, now: string): ThreadO
     opportunities.push({
       kind: "ReplyNeeded",
       subject: { kind: "thread", id: threadId },
-      title: thread?.subject ?? "Conversation",
+      title: thread?.subject || "Conversation",
       value,
       signals: threadSignals,
       evidence: threadSignals.map((signal) => signal.evidence),

@@ -182,8 +182,8 @@ describe("GitHub facts enter understanding but not the decision layer (#45 bound
       ...Object.values(after.checks),
     ];
     expect(subjects.length).toBeGreaterThan(0);
-    const recordedEventIds = new Set(subjects.flatMap((subject) => subject.eventIds));
-    expect(emitted.every((event) => recordedEventIds.has(event.id))).toBe(true);
+    const contextEventIds = new Set(subjects.flatMap((subject) => subject.eventIds));
+    expect(contextEventIds).toEqual(new Set(emitted.map((event) => event.id)));
     // ...the email side of Context is untouched...
     expect({ threads: after.threads, people: after.people }).toEqual(emailBefore);
     // ...and the decision layer stays thread-gated, so nothing surfaces yet (#46).

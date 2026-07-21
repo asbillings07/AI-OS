@@ -64,7 +64,6 @@ function buildReason(signals: Signal[]): string {
 export function prioritize(
   opportunities: readonly ThreadOpportunity[],
   capacity: Capacity,
-  context: ContextState,
 ): WorkItem[] {
   // Capacity sets the bar for attention (not the intrinsic score): plenty of
   // capacity -> a lower bar; little capacity -> a high bar, so only the most
@@ -92,12 +91,13 @@ export function prioritize(
       Math.min(1, 0.45 * opportunity.value + 0.25 * urgency + 0.3 * responsibilityStrength),
     );
     const threadId = opportunity.subject.id;
-    const thread = context.threads[threadId];
 
     return {
       id: `wi-${threadId}`,
       threadId,
-      title: opportunity.title || thread?.subject || "Conversation",
+      // The Opportunity already carries its display title; the ranking function no
+      // longer re-opens Context (the thread detector supplies subject or a default).
+      title: opportunity.title,
       band: priority >= attentionThreshold ? "needs_attention" : "can_wait",
       priority,
       opportunity: opportunity.value,
@@ -142,7 +142,7 @@ export function buildWorkItems(
     }
   }
   const capacity = estimateCapacity(now, context);
-  const items = prioritize(opportunities, capacity, context);
+  const items = prioritize(opportunities, capacity);
   if (tracing) {
     for (const item of items) {
       logger.event(LogEvents.WorkItemRanked, {

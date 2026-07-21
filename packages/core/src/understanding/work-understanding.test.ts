@@ -181,7 +181,7 @@ describe("the decision layer is type-gated to thread subjects (#45 -> #46)", () 
 
     // The legitimate feed (the thread detector) emits nothing for GitHub-only
     // Context, so the prioritizer produces no Work Items.
-    const items = prioritize(detectOpportunities(context, NOW), estimateCapacity(NOW, context), context);
+    const items = prioritize(detectOpportunities(context, NOW), estimateCapacity(NOW, context));
     expect(items).toEqual([]);
   });
 });

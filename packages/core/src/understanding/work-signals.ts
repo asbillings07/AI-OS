@@ -29,7 +29,11 @@ function agingSignal(
   now: string,
   sourceEventIds: string[],
 ): Signal | null {
-  const ageHours = Math.max(0, elapsedHours(startedAt, now));
+  const elapsed = elapsedHours(startedAt, now);
+  // Defend the pure detector against a malformed durable timestamp: NaN survives
+  // Math.max/Math.min and would otherwise yield a "Waiting for NaN hour(s)" Signal.
+  if (!Number.isFinite(elapsed)) return null;
+  const ageHours = Math.max(0, elapsed);
   const strength = Math.min(1, ageHours / AGING_CAP_HOURS);
   if (ageHours < 1) return null;
   const days = Math.floor(ageHours / 24);
