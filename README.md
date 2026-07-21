@@ -41,10 +41,15 @@ packages/
     opportunity/       #   Opportunity Detection (#26)
     capacity/          #   Capacity (#10)
     prioritization/    #   ranked, explained Work Items (#29)
+    observability/     #   structured, opt-in logging of the decision loop
   ai/                  # AI capability layer: ask for capabilities, not providers (ADR-0011)
   gmail-skill/         # the first Skill (ADR-0010) — email in, domain events out
-  fixtures/            # replayable sample data for key-free, deterministic runs
+  fixtures/            # replayable sample data for key-free, deterministic runs ([catalog](packages/fixtures/README.md))
 ```
+
+### Requirements
+
+- **Node 24 LTS** (pinned in [`.nvmrc`](./.nvmrc); enforced by `engines`). Run `nvm use` to match.
 
 Getting started:
 
@@ -52,9 +57,42 @@ Getting started:
 npm install
 npm run typecheck
 npm test
+npm run slice        # run the whole decision loop in the terminal (no keys, no network)
 ```
 
 The whole slice runs with no API keys and no network: Gmail is fixtures-first and the default AI is a deterministic stub. See [the vertical-slice walk-through](docs/architecture/vertical-slice.md) for how a message flows all the way to Mission Control and back.
+
+### Operational commands
+
+Local developer ergonomics for the append-only event log (the source of truth, ADR-0009):
+
+| Command | What it does |
+| --- | --- |
+| `npm run bootstrap` | Create the log if needed and seed Gmail fixtures once (idempotent). |
+| `npm run db:rebuild` | Rebuild all projections by replaying the log — proof that state is disposable. |
+| `npm run log:inspect` | Print the raw event log in order (read-only). |
+| `npm run db:reset` | Wipe the local log; the next boot re-seeds from fixtures. |
+| `npm run build:mission-control` | Production build of the Next.js app. |
+
+To run the dashboard: `npm run bootstrap`, then `npm --workspace @orion/mission-control run dev`.
+
+> **Privacy:** `log:inspect` prints event payload previews. With fixtures this is harmless, but against real Gmail those previews may contain message content, names, and addresses. Treat inspector output as private — don't paste it into public issues or logs.
+
+> **Note:** Stop Mission Control before `db:reset` — deleting the SQLite file (and its WAL/SHM sidecars) while the app holds it open can behave unpredictably.
+
+### Environment variables
+
+Everything works with **none** set. All are optional:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `ORION_LOG` | _(off)_ | Any truthy value (`1`, `true`, `debug`) emits a structured JSON trace of the decision loop to stderr. `0`/`false`/`off`/empty = off. |
+| `ORION_DB_PATH` | `apps/mission-control/.data/orion.db` | Path to the SQLite event log, shared by the app and the CLI tools above. |
+| `ORION_AI_API_KEY` | _(unset)_ | If set, routes AI capabilities to an OpenAI-compatible HTTP provider instead of the deterministic stub. |
+| `ORION_AI_BASE_URL` | OpenAI API | Base URL for the HTTP AI provider. |
+| `ORION_AI_MODEL` | `gpt-4o-mini` | Model name for the HTTP AI provider (never leaks past the AI layer). |
+
+Example: `ORION_LOG=1 npm run slice`.
 
 ## Contributing
 

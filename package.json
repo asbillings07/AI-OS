@@ -12,7 +12,12 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "slice": "tsx scripts/run-slice.ts"
+    "slice": "tsx scripts/run-slice.ts",
+    "bootstrap": "tsx scripts/bootstrap.ts",
+    "db:reset": "tsx scripts/db-reset.ts",
+    "db:rebuild": "tsx scripts/rebuild.ts",
+    "log:inspect": "tsx scripts/inspect-log.ts",
+    "build:mission-control": "npm --workspace @orion/mission-control run build"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

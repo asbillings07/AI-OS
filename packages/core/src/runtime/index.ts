@@ -2,12 +2,15 @@ import type { EventEnvelope } from "../events/index.js";
 import type { EventBus, Unsubscribe } from "../bus/index.js";
 import type { EventStore } from "../store/index.js";
 import type { ProjectionHost } from "../projection/index.js";
+import { LogEvents, nullLogger, type Logger } from "../observability/index.js";
 
 export interface OrionRuntimeOptions {
   bus: EventBus;
   store: EventStore;
   /** Projection hosts to keep in sync with the log (live and on rebuild). */
   projections?: ReadonlyArray<ProjectionHost<unknown>>;
+  /** Optional structured logger. Defaults to a no-op (logging is opt-in). */
+  logger?: Logger;
 }
 
 /**
@@ -27,6 +30,7 @@ export class OrionRuntime {
   readonly #store: EventStore;
   readonly #projections: ReadonlyArray<ProjectionHost<unknown>>;
   readonly #subscriptions: Unsubscribe[] = [];
+  readonly #logger: Logger;
   /** Tail of the record queue; serializes concurrent writers (see `record`). */
   #recordQueue: Promise<unknown> = Promise.resolve();
 
@@ -34,6 +38,7 @@ export class OrionRuntime {
     this.#bus = options.bus;
     this.#store = options.store;
     this.#projections = options.projections ?? [];
+    this.#logger = options.logger ?? nullLogger;
     for (const projection of this.#projections) {
       this.#subscriptions.push(projection.attach(this.#bus));
     }
@@ -82,7 +87,14 @@ export class OrionRuntime {
   async #appendAndPublish(event: EventEnvelope): Promise<void> {
     const isNew = this.#store.append(event);
     if (isNew) {
+      this.#logger.event(LogEvents.EventRecorded, {
+        id: event.id,
+        type: event.type,
+        source: event.source,
+      });
       await this.#bus.publish(event);
+    } else {
+      this.#logger.event(LogEvents.EventDuplicate, { id: event.id, type: event.type });
     }
   }
 
@@ -91,7 +103,12 @@ export class OrionRuntime {
     for (const projection of this.#projections) {
       projection.reset();
     }
-    await this.#bus.replay(this.#store.readAll());
+    const events = this.#store.readAll();
+    await this.#bus.replay(events);
+    this.#logger.event(LogEvents.ProjectionRebuilt, {
+      events: events.length,
+      projections: this.#projections.length,
+    });
   }
 
   dispose(): void {

@@ -2,6 +2,7 @@ import type { ContextState } from "../understanding/context.js";
 import { detectOpportunities, type Opportunity } from "../opportunity/index.js";
 import { estimateCapacity, type Capacity } from "../capacity/index.js";
 import type { Signal } from "../understanding/signals.js";
+import { LogEvents, nullLogger, type Logger } from "../observability/index.js";
 
 export type WorkItemBand = "needs_attention" | "can_wait";
 
@@ -105,9 +106,40 @@ export function prioritize(
  * The full deterministic prioritization pipeline: Context in, ranked Work Items
  * out. No AI, no clock — pure and reproducible given `now`. AI summaries are
  * layered on afterward by the application, never here.
+ *
+ * The optional logger only observes; it never changes the result. It defaults to
+ * a no-op so the pipeline stays pure and quiet unless a caller opts in. When the
+ * logger is the no-op we skip the trace loops entirely, so the disabled path is
+ * genuinely free — no per-item work on every read/rebuild. Trace names are
+ * computation-oriented on purpose: this runs on every read/rebuild, so it emits
+ * `opportunity.evaluated`/`workitem.ranked`, not a recorded state transition.
  */
-export function buildWorkItems(context: ContextState, now: string): WorkItem[] {
+export function buildWorkItems(
+  context: ContextState,
+  now: string,
+  logger: Logger = nullLogger,
+): WorkItem[] {
+  const tracing = logger !== nullLogger;
   const opportunities = detectOpportunities(context, now);
+  if (tracing) {
+    for (const opportunity of opportunities) {
+      logger.event(LogEvents.OpportunityEvaluated, {
+        kind: opportunity.kind,
+        threadId: opportunity.threadId,
+        value: opportunity.value,
+      });
+    }
+  }
   const capacity = estimateCapacity(now, context);
-  return prioritize(opportunities, capacity, context);
+  const items = prioritize(opportunities, capacity, context);
+  if (tracing) {
+    for (const item of items) {
+      logger.event(LogEvents.WorkItemRanked, {
+        id: item.id,
+        band: item.band,
+        priority: item.priority,
+      });
+    }
+  }
+  return items;
 }
