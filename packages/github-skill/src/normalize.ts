@@ -77,9 +77,11 @@ export function normalizeActivity(
       return { type: EventTypes.CheckFailed, payload, id: eventId(raw), occurredAt: raw.occurredAt };
     }
     default: {
-      // Exhaustiveness: a new raw kind must be handled explicitly above.
+      // Compile-time exhaustiveness: a new raw kind must be handled above.
       const _exhaustive: never = raw;
-      return _exhaustive;
+      // Runtime guard: never return the raw object (that would violate the
+      // NormalizedGitHubEvent contract). Fail fast on unexpected external data.
+      throw new Error(`Unhandled GitHub activity kind: ${(raw as { kind: string }).kind}`);
     }
   }
 }
