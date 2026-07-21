@@ -2,11 +2,16 @@ import type { EventEnvelope } from "../events/index.js";
 import type { Projection } from "../projection/index.js";
 import {
   EventTypes,
+  type ActorRef,
+  type AssignmentReceivedPayload,
+  type CheckFailedPayload,
   type EmailAddress,
   type MessageReceivedPayload,
+  type ReviewRequestedPayload,
   type WorkItemActionPayload,
   type WorkItemSnoozePayload,
 } from "../domain/index.js";
+import { checkSubjectId } from "./subject.js";
 
 /** A message as remembered inside Context, with a link back to its Event. */
 export interface ObservedMessage {
@@ -47,17 +52,161 @@ export interface PersonContext {
 }
 
 /**
+ * Fields common to every collaborative-work subject Context remembers. Occurrence
+ * ids accumulate (every contributing Event), while display fields reflect the
+ * NEWEST source occurrence by domain timestamp — never by append order (a delayed
+ * poll can deliver an older occurrence last). `latestEventId` names the winner and
+ * is the deterministic tie-breaker for equal timestamps.
+ */
+interface OccurrenceContext {
+  /** Every Event that has contributed to this subject, in arrival order. */
+  eventIds: string[];
+  /** The Event whose occurrence currently supplies the display fields. */
+  latestEventId: string;
+}
+
+/** A change awaiting the user's review. Subject id = changeId. */
+export interface ReviewContext extends OccurrenceContext {
+  changeId: string;
+  title: string;
+  requestedBy?: ActorRef;
+  location: string;
+  url: string;
+  requestedAt: string;
+}
+
+/** A unit of work the user was made responsible for. Subject id = itemId. */
+export interface AssignmentContext extends OccurrenceContext {
+  itemId: string;
+  title: string;
+  assignedBy?: ActorRef;
+  location: string;
+  url: string;
+  assignedAt: string;
+}
+
+/** A failed check on the user's work. Subject id = changeId:check:checkName. */
+export interface CheckContext extends OccurrenceContext {
+  changeId: string;
+  checkName: string;
+  title: string;
+  location: string;
+  url: string;
+  failedAt: string;
+}
+
+/**
  * Context (ADR-0005): Orion's continuously-evolving understanding of the user's
  * situation, derived purely from Events. It is a projection, never a source of
  * truth — rebuild it from the log at any time.
+ *
+ * Note (lifecycle): the vocabulary records obligation *appearing* (review
+ * requested, assignment received, check failed) but not yet *disappearing*. So
+ * `reviews`/`assignments`/`checks` are currently MONOTONIC — a subject, once
+ * present, is not cleared by any source fact until resolution events exist.
  */
 export interface ContextState {
   threads: Record<string, ThreadContext>;
   people: Record<string, PersonContext>;
+  reviews: Record<string, ReviewContext>;
+  assignments: Record<string, AssignmentContext>;
+  checks: Record<string, CheckContext>;
 }
 
 function emptyContext(): ContextState {
-  return { threads: {}, people: {} };
+  return { threads: {}, people: {}, reviews: {}, assignments: {}, checks: {} };
+}
+
+/**
+ * Whether an incoming occurrence should supply display fields, comparing domain
+ * timestamps (not append order) with a deterministic event-id tie-break.
+ */
+function occurrenceWins(
+  incomingAt: string,
+  incomingEventId: string,
+  currentAt: string,
+  currentEventId: string,
+): boolean {
+  const incoming = new Date(incomingAt).getTime();
+  const current = new Date(currentAt).getTime();
+  if (incoming !== current) {
+    return incoming > current;
+  }
+  return incomingEventId > currentEventId;
+}
+
+/** Append an event id once (occurrences are already deduped on the log by id). */
+function withEventId(eventIds: string[] | undefined, eventId: string): string[] {
+  if (!eventIds) return [eventId];
+  return eventIds.includes(eventId) ? eventIds : [...eventIds, eventId];
+}
+
+function applyReviewRequested(state: ContextState, event: EventEnvelope): ContextState {
+  const payload = event.payload as ReviewRequestedPayload;
+  const key = payload.changeId;
+  const existing = state.reviews[key];
+  const eventIds = withEventId(existing?.eventIds, event.id);
+  const wins =
+    !existing ||
+    occurrenceWins(payload.requestedAt, event.id, existing.requestedAt, existing.latestEventId);
+  const review: ReviewContext = wins
+    ? {
+        changeId: payload.changeId,
+        title: payload.title,
+        requestedBy: payload.requestedBy,
+        location: payload.location,
+        url: payload.url,
+        requestedAt: payload.requestedAt,
+        eventIds,
+        latestEventId: event.id,
+      }
+    : { ...existing, eventIds };
+  return { ...state, reviews: { ...state.reviews, [key]: review } };
+}
+
+function applyAssignmentReceived(state: ContextState, event: EventEnvelope): ContextState {
+  const payload = event.payload as AssignmentReceivedPayload;
+  const key = payload.itemId;
+  const existing = state.assignments[key];
+  const eventIds = withEventId(existing?.eventIds, event.id);
+  const wins =
+    !existing ||
+    occurrenceWins(payload.assignedAt, event.id, existing.assignedAt, existing.latestEventId);
+  const assignment: AssignmentContext = wins
+    ? {
+        itemId: payload.itemId,
+        title: payload.title,
+        assignedBy: payload.assignedBy,
+        location: payload.location,
+        url: payload.url,
+        assignedAt: payload.assignedAt,
+        eventIds,
+        latestEventId: event.id,
+      }
+    : { ...existing, eventIds };
+  return { ...state, assignments: { ...state.assignments, [key]: assignment } };
+}
+
+function applyCheckFailed(state: ContextState, event: EventEnvelope): ContextState {
+  const payload = event.payload as CheckFailedPayload;
+  const key = checkSubjectId(payload.changeId, payload.checkName);
+  const existing = state.checks[key];
+  const eventIds = withEventId(existing?.eventIds, event.id);
+  const wins =
+    !existing || occurrenceWins(payload.failedAt, event.id, existing.failedAt, existing.latestEventId);
+  const check: CheckContext = wins
+    ? {
+        changeId: payload.changeId,
+        checkName: payload.checkName,
+        title: payload.title,
+        location: payload.location,
+        url: payload.url,
+        failedAt: payload.failedAt,
+        eventIds,
+        latestEventId: event.id,
+      }
+    : { ...existing, eventIds };
+  return { ...state, checks: { ...state.checks, [key]: check } };
 }
 
 function applyMessageReceived(state: ContextState, event: EventEnvelope): ContextState {
@@ -121,6 +270,7 @@ function applyMessageReceived(state: ContextState, event: EventEnvelope): Contex
       };
 
   return {
+    ...state,
     threads: { ...state.threads, [payload.threadId]: thread },
     people: { ...state.people, [payload.from.address]: updatedPerson },
   };
@@ -161,6 +311,12 @@ export const contextProjection: Projection<ContextState> = {
     switch (event.type) {
       case EventTypes.MessageReceived:
         return applyMessageReceived(state, event);
+      case EventTypes.ReviewRequested:
+        return applyReviewRequested(state, event);
+      case EventTypes.AssignmentReceived:
+        return applyAssignmentReceived(state, event);
+      case EventTypes.CheckFailed:
+        return applyCheckFailed(state, event);
       case EventTypes.WorkItemActedOn:
         return applyThreadStatus(state, event, "handled");
       case EventTypes.WorkItemSnoozed:

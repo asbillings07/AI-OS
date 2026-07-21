@@ -39,7 +39,7 @@ describe("Opportunity detection (#26)", () => {
     ]);
     const opportunities = detectOpportunities(context, NOON);
     expect(opportunities).toHaveLength(1);
-    expect(opportunities[0]?.threadId).toBe("t1");
+    expect(opportunities[0]?.subject).toEqual({ kind: "thread", id: "t1" });
     expect(opportunities[0]?.kind).toBe("ReplyNeeded");
   });
 });

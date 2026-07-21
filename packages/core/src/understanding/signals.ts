@@ -1,12 +1,20 @@
 import { isAutomatedSender } from "../domain/index.js";
 import type { ContextState, ThreadContext } from "./context.js";
+import type { SubjectRef } from "./subject.js";
 
 export type SignalKind =
+  // Conversation (thread) signals.
   | "AwaitingReply"
   | "DirectQuestion"
   | "FromKnownPerson"
   | "Aging"
-  | "LikelyLowValue";
+  | "LikelyLowValue"
+  // Collaborative-work signals (reviews, assignments, checks).
+  | "PendingReview"
+  | "Assigned"
+  | "CheckFailing"
+  // An explicit obligation the user has taken on (assigned/requested).
+  | "Commitment";
 
 /**
  * A Signal (ubiquitous language): a meaningful change or relationship detected
@@ -16,7 +24,8 @@ export type SignalKind =
  */
 export interface Signal {
   kind: SignalKind;
-  threadId: string;
+  /** The persistent thing this Signal is about (source-neutral). */
+  subject: SubjectRef;
   /** 0..1 deterministic magnitude. */
   strength: number;
   /** Human-readable justification, e.g. "Contains a direct question." */
@@ -73,6 +82,7 @@ export function detectSignals(context: ContextState, now: string): Signal[] {
       continue;
     }
 
+    const subject: SubjectRef = { kind: "thread", id: thread.threadId };
     const eventIds = threadEventIds(thread);
     const lastSender = thread.messages[thread.messages.length - 1]?.from.address ?? "";
     const automated = isAutomatedSender(lastSender);
@@ -80,7 +90,7 @@ export function detectSignals(context: ContextState, now: string): Signal[] {
     if (automated) {
       signals.push({
         kind: "LikelyLowValue",
-        threadId: thread.threadId,
+        subject,
         strength: 0.8,
         evidence: `From an automated sender (${lastSender}).`,
         sourceEventIds: eventIds,
@@ -90,7 +100,7 @@ export function detectSignals(context: ContextState, now: string): Signal[] {
 
     signals.push({
       kind: "AwaitingReply",
-      threadId: thread.threadId,
+      subject,
       strength: 1,
       evidence: "You have not replied to this conversation.",
       sourceEventIds: eventIds,
@@ -100,7 +110,7 @@ export function detectSignals(context: ContextState, now: string): Signal[] {
     if (QUESTION_PATTERN.test(text)) {
       signals.push({
         kind: "DirectQuestion",
-        threadId: thread.threadId,
+        subject,
         strength: 0.85,
         evidence: "The message asks a direct question.",
         sourceEventIds: eventIds,
@@ -111,7 +121,7 @@ export function detectSignals(context: ContextState, now: string): Signal[] {
     if (person && person.messageCount >= KNOWN_PERSON_THRESHOLD) {
       signals.push({
         kind: "FromKnownPerson",
-        threadId: thread.threadId,
+        subject,
         strength: Math.min(1, 0.4 + person.messageCount * 0.15),
         evidence: `From ${person.name ?? lastSender}, someone you correspond with (${person.messageCount} messages).`,
         sourceEventIds: eventIds,
@@ -122,7 +132,7 @@ export function detectSignals(context: ContextState, now: string): Signal[] {
     if (age >= AGING_HOURS) {
       signals.push({
         kind: "Aging",
-        threadId: thread.threadId,
+        subject,
         strength: Math.min(1, age / (AGING_HOURS * 3)),
         evidence: `Waiting for ${Math.floor(age / 24)} day(s).`,
         sourceEventIds: eventIds,

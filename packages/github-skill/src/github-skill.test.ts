@@ -158,20 +158,29 @@ describe("GitHub Skill ingestion (ADR-0010)", () => {
   });
 });
 
-describe("core is unaware GitHub exists (#44 boundary)", () => {
-  it("adds facts to the log without changing Context or Work Items", async () => {
+describe("GitHub facts enter understanding but not the decision layer (#45 boundary)", () => {
+  it("adds facts to the log and Context, but surfaces no Work Items", async () => {
     const { runtime, store, context } = newRuntime();
-    const before = structuredClone(context.state);
+    const before = context.state as ContextState;
+    const emailBefore = { threads: before.threads, people: before.people };
 
     const emitted = await new GitHubSkill().ingest(runtime);
 
     // Facts are on the log...
     expect(store.count()).toBe(emitted.length);
     expect(emitted.length).toBeGreaterThan(0);
-    // ...but Context is untouched (contextProjection ignores unknown types)...
-    expect(context.state).toEqual(before);
-    // ...and nothing surfaces as a Work Item.
-    expect(buildWorkItems(context.state as ContextState, NOW)).toEqual([]);
+
+    const after = context.state as ContextState;
+    // ...core now UNDERSTANDS them: they enter Context as domain subjects (#45)...
+    const subjectCount =
+      Object.keys(after.reviews).length +
+      Object.keys(after.assignments).length +
+      Object.keys(after.checks).length;
+    expect(subjectCount).toBe(emitted.length);
+    // ...the email side of Context is untouched...
+    expect({ threads: after.threads, people: after.people }).toEqual(emailBefore);
+    // ...and the decision layer stays thread-gated, so nothing surfaces yet (#46).
+    expect(buildWorkItems(after, NOW)).toEqual([]);
   });
 
   it("does not let GitHub facts alter Gmail-derived Work Items", async () => {

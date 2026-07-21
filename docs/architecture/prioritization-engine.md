@@ -28,6 +28,8 @@ Prioritization weighs four **independent** dimensions. They are deliberately kep
 
 > **This is not arithmetic.** `priority = opportunity × capacity × commitment × urgency` is explicitly *not* the model. These are reasoning inputs, and how they are weighed and resolved is left open for implementation and learning. Presenting prioritization as a fixed product would overclaim precision Orion does not have.
 
+> **v0.1 note — the Commitment input is currently a blend.** In code the Commitment factor takes the stronger of an explicit obligation (a `Commitment` Signal, e.g. an assignment or a review requested from you) and a relationship-derived expectation (a `FromKnownPerson` Signal). These are not conceptually identical — one is a duty, the other is social weight — so the computation names the combined value honestly (`responsibilityStrength`) rather than pretending they are the same. They may split into separate dimensions later.
+
 ```
   Opportunity  ┐
   Capacity     ├──▶  Prioritization  ──▶  ranked Work Items  ──▶  Mission Control
