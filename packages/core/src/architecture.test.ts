@@ -31,6 +31,7 @@ const WORKSPACE_PACKAGES: ReadonlyArray<{ dir: string; name: string }> = [
   { dir: "packages/core", name: "@orion/core" },
   { dir: "packages/ai", name: "@orion/ai" },
   { dir: "packages/gmail-skill", name: "@orion/gmail-skill" },
+  { dir: "packages/github-skill", name: "@orion/github-skill" },
   { dir: "packages/fixtures", name: "@orion/fixtures" },
   { dir: "apps/mission-control", name: "@orion/mission-control" },
 ];
@@ -66,9 +67,18 @@ const RULES: readonly PackageRule[] = [
   },
   {
     // A Skill extends Orion through core's interfaces/events (ADR-0010); it uses
-    // fixtures for offline data. No AI layer, no UI, no direct provider calls.
+    // fixtures for offline data. No AI layer, no UI, no direct provider calls,
+    // and — critically — no other Skill (Gmail must not know GitHub exists).
     name: "@orion/gmail-skill",
     dir: "packages/gmail-skill",
+    allowedWorkspace: ["@orion/core", "@orion/fixtures"],
+    forbiddenExternal: [...UI, ...PROVIDER_SDKS],
+  },
+  {
+    // The second Skill mirrors the first: core + fixtures only. It must not reach
+    // into the Gmail Skill, the AI layer, UI, or provider SDKs.
+    name: "@orion/github-skill",
+    dir: "packages/github-skill",
     allowedWorkspace: ["@orion/core", "@orion/fixtures"],
     forbiddenExternal: [...UI, ...PROVIDER_SDKS],
   },
@@ -83,7 +93,13 @@ const RULES: readonly PackageRule[] = [
     // The app depends inward on any @orion package and may use its own UI stack.
     name: "@orion/mission-control",
     dir: "apps/mission-control",
-    allowedWorkspace: ["@orion/core", "@orion/ai", "@orion/gmail-skill", "@orion/fixtures"],
+    allowedWorkspace: [
+      "@orion/core",
+      "@orion/ai",
+      "@orion/gmail-skill",
+      "@orion/github-skill",
+      "@orion/fixtures",
+    ],
     forbiddenExternal: [],
   },
 ];
@@ -267,6 +283,14 @@ describe("architecture fitness — the checker actually catches violations", () 
 
   it("catches a forbidden external (UI) import", () => {
     expect(violationsInContent(coreRule, coreFile, 'import { useState } from "react";')).not.toEqual([]);
+  });
+
+  it("catches one Skill importing another (Gmail must not know GitHub exists)", () => {
+    const githubRule = RULES.find((r) => r.name === "@orion/github-skill")!;
+    const githubFile = path.join(repoRoot, "packages", "github-skill", "src", "__probe__.ts");
+    expect(
+      violationsInContent(githubRule, githubFile, 'import { GmailSkill } from "@orion/gmail-skill";'),
+    ).not.toEqual([]);
   });
 
   it("allows the storage impl, node builtins, and same-package relatives in core", () => {

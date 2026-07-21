@@ -1,6 +1,23 @@
-import { makeEvent, EventTypes, type OrionRuntime, type MessageReceivedEvent } from "@orion/core";
+import {
+  makeEvent,
+  EventTypes,
+  type OrionRuntime,
+  type MessageReceivedEvent,
+  type SkillManifest,
+} from "@orion/core";
 import { FixtureGmailSource, type GmailSource } from "./source.js";
 import { normalizeGmailMessage } from "./normalize.js";
+
+/**
+ * What the Gmail Skill declares to the platform (ADR-0010): its identity, the
+ * `source` label it stamps on Events, and the domain event types it produces.
+ */
+export const gmailManifest = {
+  id: "gmail",
+  source: "gmail-skill",
+  produces: [EventTypes.MessageReceived],
+  consumes: [],
+} as const satisfies SkillManifest;
 
 export interface GmailSkillOptions {
   /** Defaults to captured fixtures (offline, key-free). */
@@ -17,6 +34,7 @@ export interface GmailSkillOptions {
  * append-only store dedupes on replay/re-run (at-least-once, ADR-0008).
  */
 export class GmailSkill {
+  readonly manifest: SkillManifest = gmailManifest;
   readonly #source: GmailSource;
 
   constructor(options: GmailSkillOptions = {}) {
@@ -36,7 +54,7 @@ export class GmailSkill {
       const payload = normalizeGmailMessage(raw);
       const event = makeEvent({
         type: EventTypes.MessageReceived,
-        source: "gmail-skill",
+        source: this.manifest.source,
         payload,
         // Deterministic id from the message id -> idempotent ingestion.
         id: `gmail:${payload.messageId}`,

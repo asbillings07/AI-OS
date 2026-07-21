@@ -1,7 +1,9 @@
 /**
  * One-command local setup. Creates the event log if needed, rebuilds
- * understanding from it (ADR-0009), and seeds Gmail fixtures once when the log
- * is empty. Idempotent: run it as often as you like.
+ * understanding from it (ADR-0009), and seeds each fixture Skill (Gmail +
+ * GitHub) idempotently. Deterministic event ids mean re-seeding is a no-op on
+ * the append-only store, so running this as often as you like is safe and an
+ * existing log picks up any newly added Source.
  *
  *   npm run bootstrap
  */
@@ -17,6 +19,7 @@ import {
   createLogger,
 } from "@orion/core";
 import { GmailSkill } from "@orion/gmail-skill";
+import { GitHubSkill } from "@orion/github-skill";
 import { resolveDbPath } from "./_shared.js";
 
 async function main(): Promise<void> {
@@ -37,12 +40,18 @@ async function main(): Promise<void> {
 
     await runtime.rebuild();
     const before = store.count();
-    if (before === 0) {
-      const ingested = await new GmailSkill().ingest(runtime);
-      console.log(`Seeded ${ingested.length} messages from Gmail fixtures.`);
-    } else {
-      console.log(`Log already has ${before} event(s); left as-is.`);
-    }
+    // Seed each fixture Skill idempotently: deterministic event ids mean
+    // re-ingesting is a no-op on the append-only store, and an existing log (e.g.
+    // Gmail-only from an earlier slice) picks up any newly added Source. We do
+    // NOT gate on "is the log empty?", so all entry points converge on one log.
+    await new GmailSkill().ingest(runtime);
+    await new GitHubSkill().ingest(runtime);
+    const added = store.count() - before;
+    console.log(
+      added === 0
+        ? `Log already seeded (${before} event(s)); nothing new from fixtures.`
+        : `Seeded ${added} new event(s) from fixtures.`,
+    );
 
     const items = buildWorkItems(context.state, new Date().toISOString(), logger);
     console.log(`\nEvent log:  ${dbPath}`);

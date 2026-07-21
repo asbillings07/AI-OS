@@ -8,6 +8,12 @@ import type { EventEnvelope } from "../events/index.js";
 export const EventTypes = {
   /** A message arrived for the user, from any communication Source. */
   MessageReceived: "MessageReceived",
+  /** Someone asked the user to review a change (e.g. a proposed code change). */
+  ReviewRequested: "ReviewRequested",
+  /** The user was made responsible for a unit of work. */
+  AssignmentReceived: "AssignmentReceived",
+  /** An automated verification on the user's work reported failure. */
+  CheckFailed: "CheckFailed",
   /** The user acted on a Work Item (e.g. handled/replied). */
   WorkItemActedOn: "WorkItemActedOn",
   /** The user chose to deal with a Work Item later. */
@@ -45,6 +51,83 @@ export interface MessageReceivedPayload {
   receivedAt: string;
 }
 
+/**
+ * A collaborator, identified only within the emitting Source's namespace. The
+ * `externalId` is opaque and source-scoped: a GitHub login, a calendar attendee,
+ * an issue tracker account. It deliberately does NOT imply cross-source
+ * equivalence — resolving that two ActorRefs are the same person is later
+ * identity/correlation work, not something the domain assumes here.
+ */
+export interface ActorRef {
+  readonly externalId: string;
+  readonly displayName?: string;
+}
+
+/**
+ * A review was requested from the user on some change (e.g. a proposed code
+ * change). Domain-centric: nothing here knows what a "pull request" is.
+ *
+ * `requestedAt` is the same source-reported instant as the Event envelope's
+ * `occurredAt`; both are kept for domain consistency (mirroring
+ * MessageReceivedPayload.receivedAt) and are asserted equal by the adapter.
+ */
+export interface ReviewRequestedPayload {
+  /** Stable domain id for this occurrence of the request. */
+  reviewRequestId: string;
+  /** The change under review this request concerns. */
+  changeId: string;
+  title: string;
+  /** Who asked for the review, if known. */
+  requestedBy?: ActorRef;
+  /** Human-readable location for display only, e.g. "acme/orion#128". */
+  location: string;
+  /** Canonical link for display only. */
+  url: string;
+  /** When the request occurred, ISO 8601 UTC (== envelope occurredAt). */
+  requestedAt: string;
+}
+
+/**
+ * The user was made responsible for a unit of work. Domain-centric: nothing
+ * here knows what a GitHub "issue" is.
+ */
+export interface AssignmentReceivedPayload {
+  /** Stable domain id for this occurrence of the assignment. */
+  assignmentId: string;
+  /** The work item the user was assigned. */
+  itemId: string;
+  title: string;
+  /** Who assigned it, if known. */
+  assignedBy?: ActorRef;
+  /** Human-readable location for display only. */
+  location: string;
+  /** Canonical link for display only. */
+  url: string;
+  /** When the assignment occurred, ISO 8601 UTC (== envelope occurredAt). */
+  assignedAt: string;
+}
+
+/**
+ * An automated verification on the user's work reported failure. Domain-centric:
+ * nothing here knows what a "workflow" or "CI" is; it could equally describe a
+ * deployment gate, a compliance check, or a data validation.
+ */
+export interface CheckFailedPayload {
+  /** Stable domain id for this occurrence of the failure. */
+  checkId: string;
+  /** The change the check ran against. */
+  changeId: string;
+  /** Name of the check that failed. */
+  checkName: string;
+  title: string;
+  /** Human-readable location for display only. */
+  location: string;
+  /** Canonical link for display only. */
+  url: string;
+  /** When the failure occurred, ISO 8601 UTC (== envelope occurredAt). */
+  failedAt: string;
+}
+
 export interface WorkItemActionPayload {
   workItemId: string;
   /** The conversation the Work Item was about, so Context can react. */
@@ -57,6 +140,9 @@ export interface WorkItemSnoozePayload extends WorkItemActionPayload {
 }
 
 export type MessageReceivedEvent = EventEnvelope<"MessageReceived", MessageReceivedPayload>;
+export type ReviewRequestedEvent = EventEnvelope<"ReviewRequested", ReviewRequestedPayload>;
+export type AssignmentReceivedEvent = EventEnvelope<"AssignmentReceived", AssignmentReceivedPayload>;
+export type CheckFailedEvent = EventEnvelope<"CheckFailed", CheckFailedPayload>;
 export type WorkItemActedOnEvent = EventEnvelope<"WorkItemActedOn", WorkItemActionPayload>;
 export type WorkItemSnoozedEvent = EventEnvelope<"WorkItemSnoozed", WorkItemSnoozePayload>;
 export type WorkItemDismissedEvent = EventEnvelope<"WorkItemDismissed", WorkItemActionPayload>;

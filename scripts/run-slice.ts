@@ -20,6 +20,7 @@ import {
   type WorkItem,
 } from "@orion/core";
 import { GmailSkill } from "@orion/gmail-skill";
+import { GitHubSkill } from "@orion/github-skill";
 
 const NOW = "2026-07-15T17:00:00.000Z";
 
@@ -59,8 +60,11 @@ async function main(): Promise<void> {
     });
 
     await runtime.rebuild();
-    const ingested = await new GmailSkill().ingest(runtime);
-    console.log(`Ingested ${ingested.length} messages -> ${store.count()} events on the log.`);
+    const gmail = await new GmailSkill().ingest(runtime);
+    const github = await new GitHubSkill().ingest(runtime);
+    console.log(
+      `Ingested ${gmail.length} Gmail + ${github.length} GitHub -> ${store.count()} events on the log.`,
+    );
 
     const before = render(context.state, "Mission Control");
 
