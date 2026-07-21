@@ -217,7 +217,7 @@ describe("architecture fitness — package manifests", () => {
       const manifest = JSON.parse(
         readFileSync(path.join(repoRoot, rule.dir, "package.json"), "utf8"),
       ) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
-      const deps = { ...manifest.dependencies, ...manifest.devDependencies };
+      const deps = { ...(manifest.dependencies ?? {}), ...(manifest.devDependencies ?? {}) };
       for (const dep of Object.keys(deps)) {
         if (dep.startsWith("@orion/") && dep !== rule.name && !rule.allowedWorkspace.includes(dep)) {
           violations.push(`${rule.name} package.json declares forbidden workspace dep ${dep}`);

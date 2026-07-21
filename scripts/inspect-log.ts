@@ -20,11 +20,6 @@ if (!existsSync(dbPath)) {
   process.exit(0);
 }
 
-const store = new SqliteEventStore(dbPath);
-const events = store.readAll();
-console.log(`${events.length} event(s) at ${dbPath}`);
-console.log("(payloads may contain private source data — do not share output publicly)\n");
-
 function previewPayload(payload: unknown): string {
   let serialized: string;
   try {
@@ -39,13 +34,22 @@ function previewPayload(payload: unknown): string {
     : serialized;
 }
 
-for (const [index, event] of events.entries()) {
-  const preview = previewPayload(event.payload);
-  console.log(
-    `${String(index + 1).padStart(3)}. ${event.occurredAt}  ${event.type.padEnd(20)} src=${event.source}`,
-  );
-  console.log(`     id=${event.id}`);
-  console.log(`     payload=${preview}`);
-}
+const store = new SqliteEventStore(dbPath);
+try {
+  const events = store.readAll();
+  console.log(`${events.length} event(s) at ${dbPath}`);
+  console.log("(payloads may contain private source data — do not share output publicly)\n");
 
-store.close();
+  for (const [index, event] of events.entries()) {
+    const preview = previewPayload(event.payload);
+    console.log(
+      `${String(index + 1).padStart(3)}. ${event.occurredAt}  ${event.type.padEnd(20)} src=${event.source}`,
+    );
+    console.log(`     id=${event.id}`);
+    console.log(`     payload=${preview}`);
+  }
+} finally {
+  // Always release the better-sqlite3 handle, even if readAll()/printing throws,
+  // so the process exits promptly.
+  store.close();
+}
