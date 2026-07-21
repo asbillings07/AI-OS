@@ -25,10 +25,22 @@ const events = store.readAll();
 console.log(`${events.length} event(s) at ${dbPath}`);
 console.log("(payloads may contain private source data — do not share output publicly)\n");
 
+function previewPayload(payload: unknown): string {
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(payload) ?? String(payload);
+  } catch {
+    // An inspection tool must never abort mid-stream on an unserializable
+    // payload (circular refs, BigInt, etc.) — degrade gracefully instead.
+    serialized = "<unserializable payload>";
+  }
+  return serialized.length > PAYLOAD_PREVIEW
+    ? `${serialized.slice(0, PAYLOAD_PREVIEW)}…`
+    : serialized;
+}
+
 for (const [index, event] of events.entries()) {
-  const payload = JSON.stringify(event.payload);
-  const preview =
-    payload.length > PAYLOAD_PREVIEW ? `${payload.slice(0, PAYLOAD_PREVIEW)}…` : payload;
+  const preview = previewPayload(event.payload);
   console.log(
     `${String(index + 1).padStart(3)}. ${event.occurredAt}  ${event.type.padEnd(20)} src=${event.source}`,
   );

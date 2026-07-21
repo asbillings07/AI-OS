@@ -108,8 +108,9 @@ export function prioritize(
  * layered on afterward by the application, never here.
  *
  * The optional logger only observes; it never changes the result. It defaults to
- * a no-op so the pipeline stays pure and quiet unless a caller opts in (the two
- * extra loops when disabled are negligible overhead, not free). Trace names are
+ * a no-op so the pipeline stays pure and quiet unless a caller opts in. When the
+ * logger is the no-op we skip the trace loops entirely, so the disabled path is
+ * genuinely free — no per-item work on every read/rebuild. Trace names are
  * computation-oriented on purpose: this runs on every read/rebuild, so it emits
  * `opportunity.evaluated`/`workitem.ranked`, not a recorded state transition.
  */
@@ -118,22 +119,27 @@ export function buildWorkItems(
   now: string,
   logger: Logger = nullLogger,
 ): WorkItem[] {
+  const tracing = logger !== nullLogger;
   const opportunities = detectOpportunities(context, now);
-  for (const opportunity of opportunities) {
-    logger.event(LogEvents.OpportunityEvaluated, {
-      kind: opportunity.kind,
-      threadId: opportunity.threadId,
-      value: opportunity.value,
-    });
+  if (tracing) {
+    for (const opportunity of opportunities) {
+      logger.event(LogEvents.OpportunityEvaluated, {
+        kind: opportunity.kind,
+        threadId: opportunity.threadId,
+        value: opportunity.value,
+      });
+    }
   }
   const capacity = estimateCapacity(now, context);
   const items = prioritize(opportunities, capacity, context);
-  for (const item of items) {
-    logger.event(LogEvents.WorkItemRanked, {
-      id: item.id,
-      band: item.band,
-      priority: item.priority,
-    });
+  if (tracing) {
+    for (const item of items) {
+      logger.event(LogEvents.WorkItemRanked, {
+        id: item.id,
+        band: item.band,
+        priority: item.priority,
+      });
+    }
   }
   return items;
 }
