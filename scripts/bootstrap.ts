@@ -1,7 +1,9 @@
 /**
  * One-command local setup. Creates the event log if needed, rebuilds
- * understanding from it (ADR-0009), and seeds Gmail fixtures once when the log
- * is empty. Idempotent: run it as often as you like.
+ * understanding from it (ADR-0009), and seeds each fixture Skill (Gmail +
+ * GitHub) idempotently. Deterministic event ids mean re-seeding is a no-op on
+ * the append-only store, so running this as often as you like is safe and an
+ * existing log picks up any newly added Source.
  *
  *   npm run bootstrap
  */
