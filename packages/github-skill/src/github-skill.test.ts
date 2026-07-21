@@ -171,12 +171,19 @@ describe("GitHub facts enter understanding but not the decision layer (#45 bound
     expect(emitted.length).toBeGreaterThan(0);
 
     const after = context.state as ContextState;
-    // ...core now UNDERSTANDS them: they enter Context as domain subjects (#45)...
-    const subjectCount =
-      Object.keys(after.reviews).length +
-      Object.keys(after.assignments).length +
-      Object.keys(after.checks).length;
-    expect(subjectCount).toBe(emitted.length);
+    // ...core now UNDERSTANDS them: they enter Context as domain subjects (#45).
+    // Subjects are persistent things; the log holds occurrences, and several
+    // occurrences can map to one subject (requested/removed/requested again), so
+    // assert every emitted occurrence is traceable via accumulated eventIds
+    // rather than counting subjects == events.
+    const subjects = [
+      ...Object.values(after.reviews),
+      ...Object.values(after.assignments),
+      ...Object.values(after.checks),
+    ];
+    expect(subjects.length).toBeGreaterThan(0);
+    const recordedEventIds = new Set(subjects.flatMap((subject) => subject.eventIds));
+    expect(emitted.every((event) => recordedEventIds.has(event.id))).toBe(true);
     // ...the email side of Context is untouched...
     expect({ threads: after.threads, people: after.people }).toEqual(emailBefore);
     // ...and the decision layer stays thread-gated, so nothing surfaces yet (#46).
