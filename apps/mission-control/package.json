@@ -11,6 +11,7 @@
     "@orion/ai": "*",
     "@orion/core": "*",
     "@orion/gmail-skill": "*",
+    "@orion/github-skill": "*",
     "next": "^15.5.18",
     "react": "^18.3.0",
     "react-dom": "^18.3.0"

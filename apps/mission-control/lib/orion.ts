@@ -16,6 +16,7 @@ import {
   type WorkItem,
 } from "@orion/core";
 import { GmailSkill } from "@orion/gmail-skill";
+import { GitHubSkill } from "@orion/github-skill";
 import { createAi, type AiCapabilities } from "@orion/ai";
 
 interface OrionService {
@@ -48,12 +49,14 @@ async function boot(): Promise<OrionService> {
     logger,
   });
 
-  // Rebuild understanding from the log (ADR-0009). If the log is empty, seed it
-  // from Gmail fixtures once — thereafter the log is the source of truth.
+  // Rebuild understanding from the log (ADR-0009), then seed each fixture Skill
+  // idempotently. Deterministic event ids dedupe on the append-only store, so
+  // re-seeding on every boot is a no-op once present, and an existing Gmail-only
+  // log also picks up GitHub. GitHub facts land on the log but produce no Work
+  // Items yet — core has no GitHub interpretation until #45.
   await runtime.rebuild();
-  if (store.count() === 0) {
-    await new GmailSkill().ingest(runtime);
-  }
+  await new GmailSkill().ingest(runtime);
+  await new GitHubSkill().ingest(runtime);
 
   // The AI chokepoint reports usage; route it to the same structured trace.
   const ai = createAi({

@@ -34,12 +34,43 @@ Notes:
 - The exact bands depend on Capacity (time of day) and the prioritization
   weights; the catalog describes intent, and the tests pin the specifics.
 
+## GitHub activity
+
+`githubActivity` approximates GitHub's REST/timeline resources. Each item carries
+a `kind` discriminant and a stable `activityId` identifying **one occurrence**
+(not the affected entity), so a request removed and re-added stays two facts. The
+fixtures describe what GitHub reported; whether an item is _actionable_ is decided
+by the GitHub Skill against the configured `githubIdentity` (`{ login: "me" }`).
+That is why each actionable scenario has a non-actionable twin — the adapter must
+produce **silence** at the boundary, before any understanding exists (#44).
+
+| activityId | Kind | What it exercises | Expected (for `me`) |
+| --- | --- | --- | --- |
+| `gh-rev-128` | review_request | Review requested from `me` on `acme/orion#128` | `ReviewRequested` |
+| `gh-rev-131` | review_request | Review requested from someone else | **Silence** |
+| `gh-assign-204` | assignment | Issue assigned to `me` | `AssignmentReceived` |
+| `gh-assign-205` | assignment | Issue assigned to someone else | **Silence** |
+| `gh-check-991` | check_run | `verify` failed on `me`'s change | `CheckFailed` |
+| `gh-check-992` | check_run | `typecheck` passed | **Silence** |
+
+Notes:
+
+- **The event names are domain-centric.** `ReviewRequested` / `AssignmentReceived`
+  / `CheckFailed` never mention pull requests, issues, or workflows — those words
+  stop at this file and the Skill (Eng #8).
+- **`acme/orion`** is the same project referenced by the Gmail `th-gh`
+  notification above; together they set up the cross-source correlation work in
+  #46.
+- In #44 these land on the same log as Gmail but produce **no Context and no Work
+  Items** — the core has no GitHub interpretation yet (that is #45).
+
 ## Using them
 
 ```ts
-import { gmailMessages } from "@orion/fixtures";
+import { gmailMessages, githubActivity, githubIdentity } from "@orion/fixtures";
 ```
 
-The Gmail Skill's `FixtureGmailSource` uses these by default. See
+The Gmail Skill's `FixtureGmailSource` and the GitHub Skill's `FixtureGitHubSource`
+use these by default. See
 [`docs/architecture/vertical-slice.md`](../../docs/architecture/vertical-slice.md)
-for how they flow all the way to Mission Control.
+for how the Gmail fixtures flow all the way to Mission Control.

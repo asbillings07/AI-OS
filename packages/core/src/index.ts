@@ -1,6 +1,7 @@
 export * from "./events/index.js";
 export * from "./observability/index.js";
 export * from "./domain/index.js";
+export * from "./skills/manifest.js";
 export * from "./bus/index.js";
 export * from "./store/index.js";
 export * from "./projection/index.js";
