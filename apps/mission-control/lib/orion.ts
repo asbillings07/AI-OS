@@ -141,7 +141,7 @@ export async function recordAction(
 ): Promise<boolean> {
   const { runtime, context, logger } = await getService();
 
-  const surfaced = buildWorkItems(context.state, new Date().toISOString()).find(
+  const surfaced = buildWorkItems(context.state, new Date().toISOString(), logger).find(
     (item) => item.id === workItemId && item.threadId === threadId,
   );
   if (!surfaced) {
