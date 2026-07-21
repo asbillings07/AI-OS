@@ -148,19 +148,17 @@ export async function recordAction(
     return false;
   }
 
-  logger.event(LogEvents.UserActionRecorded, { action, workItemId, threadId });
-
   switch (action) {
     case "acted":
       await runtime.record(
         makeEvent({ type: EventTypes.WorkItemActedOn, source: "user", payload: { workItemId, threadId } }),
       );
-      return true;
+      break;
     case "dismissed":
       await runtime.record(
         makeEvent({ type: EventTypes.WorkItemDismissed, source: "user", payload: { workItemId, threadId } }),
       );
-      return true;
+      break;
     case "snoozed": {
       const snoozedUntil = new Date(Date.now() + 24 * 3_600_000).toISOString();
       await runtime.record(
@@ -170,7 +168,12 @@ export async function recordAction(
           payload: { workItemId, threadId, snoozedUntil },
         }),
       );
-      return true;
+      break;
     }
   }
+
+  // Only after the record durably succeeds — the trace must not claim an action
+  // was recorded if persistence threw.
+  logger.event(LogEvents.UserActionRecorded, { action, workItemId, threadId });
+  return true;
 }

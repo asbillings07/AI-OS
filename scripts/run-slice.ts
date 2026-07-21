@@ -67,11 +67,6 @@ async function main(): Promise<void> {
   const top = before.find((item) => item.band === "needs_attention");
   if (top) {
     console.log(`\n>> You handle "${top.title}". Recording the decision as a new Event...`);
-    logger.event(LogEvents.UserActionRecorded, {
-      action: "acted",
-      workItemId: top.id,
-      threadId: top.threadId,
-    });
     await runtime.record(
       makeEvent({
         type: EventTypes.WorkItemActedOn,
@@ -79,6 +74,12 @@ async function main(): Promise<void> {
         payload: { workItemId: top.id, threadId: top.threadId },
       }),
     );
+    // Trace the action only after it's durably recorded.
+    logger.event(LogEvents.UserActionRecorded, {
+      action: "acted",
+      workItemId: top.id,
+      threadId: top.threadId,
+    });
     render(context.state, "Mission Control (after your action)");
   }
 

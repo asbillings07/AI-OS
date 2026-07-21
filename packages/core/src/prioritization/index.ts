@@ -108,7 +108,10 @@ export function prioritize(
  * layered on afterward by the application, never here.
  *
  * The optional logger only observes; it never changes the result. It defaults to
- * a no-op so the pipeline stays pure and quiet unless a caller opts in.
+ * a no-op so the pipeline stays pure and quiet unless a caller opts in (the two
+ * extra loops when disabled are negligible overhead, not free). Trace names are
+ * computation-oriented on purpose: this runs on every read/rebuild, so it emits
+ * `opportunity.evaluated`/`workitem.ranked`, not a recorded state transition.
  */
 export function buildWorkItems(
   context: ContextState,
@@ -117,7 +120,7 @@ export function buildWorkItems(
 ): WorkItem[] {
   const opportunities = detectOpportunities(context, now);
   for (const opportunity of opportunities) {
-    logger.event(LogEvents.OpportunityDetected, {
+    logger.event(LogEvents.OpportunityEvaluated, {
       kind: opportunity.kind,
       threadId: opportunity.threadId,
       value: opportunity.value,
@@ -126,7 +129,7 @@ export function buildWorkItems(
   const capacity = estimateCapacity(now, context);
   const items = prioritize(opportunities, capacity, context);
   for (const item of items) {
-    logger.event(LogEvents.WorkItemSurfaced, {
+    logger.event(LogEvents.WorkItemRanked, {
       id: item.id,
       band: item.band,
       priority: item.priority,

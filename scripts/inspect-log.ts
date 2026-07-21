@@ -2,6 +2,10 @@
  * Print the raw event log in order — the single source of truth (ADR-0009).
  * Read-only. Use it to see exactly what Orion knows, without touching the app.
  *
+ * PRIVACY: payload previews can contain real source data (message content,
+ * names, addresses) once live Gmail is connected. Treat this output as private —
+ * don't paste it into public issues or logs.
+ *
  *   npm run log:inspect
  */
 import { existsSync } from "node:fs";
@@ -18,7 +22,8 @@ if (!existsSync(dbPath)) {
 
 const store = new SqliteEventStore(dbPath);
 const events = store.readAll();
-console.log(`${events.length} event(s) at ${dbPath}\n`);
+console.log(`${events.length} event(s) at ${dbPath}`);
+console.log("(payloads may contain private source data — do not share output publicly)\n");
 
 for (const [index, event] of events.entries()) {
   const payload = JSON.stringify(event.payload);

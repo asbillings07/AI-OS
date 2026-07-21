@@ -17,13 +17,29 @@ describe("structured logger", () => {
       now: () => "2026-07-20T00:00:00.000Z",
       write: (line) => lines.push(line),
     });
-    logger.event(LogEvents.OpportunityDetected, { threadId: "t1", value: 0.7 });
+    logger.event(LogEvents.OpportunityEvaluated, { threadId: "t1", value: 0.7 });
     expect(lines).toHaveLength(1);
     expect(JSON.parse(lines[0]!)).toEqual({
       t: "2026-07-20T00:00:00.000Z",
-      evt: "opportunity.detected",
+      evt: "opportunity.evaluated",
       threadId: "t1",
       value: 0.7,
+    });
+  });
+
+  it("does not let caller fields overwrite the canonical envelope", () => {
+    const lines: string[] = [];
+    const logger = createLogger({
+      enabled: true,
+      now: () => "2026-07-20T00:00:00.000Z",
+      write: (line) => lines.push(line),
+    });
+    // Hostile fields try to spoof the timestamp and event name.
+    logger.event(LogEvents.EventRecorded, { t: "1999-01-01", evt: "spoofed", id: "e1" });
+    expect(JSON.parse(lines[0]!)).toEqual({
+      t: "2026-07-20T00:00:00.000Z",
+      evt: "event.recorded",
+      id: "e1",
     });
   });
 

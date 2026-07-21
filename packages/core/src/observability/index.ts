@@ -6,8 +6,9 @@
  * Design constraints:
  *  - Framework-free: one interface, a null implementation, and a JSON-lines
  *    console implementation. No logging library, no transport.
- *  - Silent by default: tests and the deterministic slice stay quiet unless
- *    ORION_LOG is set, so log output never becomes part of any assertion.
+ *  - Silent by default with negligible overhead: tests and the deterministic
+ *    slice stay quiet unless ORION_LOG is set, so log output never becomes part
+ *    of any assertion, and the disabled logger does no I/O.
  *  - A cross-cutting concern the domain shouldn't know about: pure functions
  *    accept a Logger only as an optional, defaulted argument and never require it.
  */
@@ -21,13 +22,22 @@ export interface Logger {
   event(name: string, fields?: LogFields): void;
 }
 
-/** The canonical moments in the decision loop worth tracing. */
+/**
+ * The canonical moments in the decision loop worth tracing.
+ *
+ * Naming distinguishes *history* from *computation*. `event.recorded` describes a
+ * durable fact appended to the log (persistence, not delivery). By contrast the
+ * read pipeline runs on every render/rebuild, so its trace names are
+ * computation-oriented (`opportunity.evaluated`, `workitem.ranked`) — they are
+ * NOT the reserved domain event `OpportunityDetected`, which would imply a
+ * recorded state transition.
+ */
 export const LogEvents = {
   EventRecorded: "event.recorded",
   EventDuplicate: "event.duplicate",
   ProjectionRebuilt: "projection.rebuilt",
-  OpportunityDetected: "opportunity.detected",
-  WorkItemSurfaced: "workitem.surfaced",
+  OpportunityEvaluated: "opportunity.evaluated",
+  WorkItemRanked: "workitem.ranked",
   UserActionRecorded: "user.action.recorded",
   AiInvoked: "ai.invoked",
 } as const;
@@ -75,7 +85,9 @@ export function createLogger(options: ConsoleLoggerOptions = {}): Logger {
   return {
     event(name, fields) {
       try {
-        write(JSON.stringify({ t: now(), evt: name, ...fields }));
+        // Canonical envelope fields come last so a caller's `fields` can never
+        // overwrite the timestamp or event name on this shared chokepoint.
+        write(JSON.stringify({ ...fields, t: now(), evt: name }));
       } catch {
         // A logger must never break the program it observes.
       }

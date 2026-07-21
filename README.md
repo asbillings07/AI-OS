@@ -76,6 +76,10 @@ Local developer ergonomics for the append-only event log (the source of truth, A
 
 To run the dashboard: `npm run bootstrap`, then `npm --workspace @orion/mission-control run dev`.
 
+> **Privacy:** `log:inspect` prints event payload previews. With fixtures this is harmless, but against real Gmail those previews may contain message content, names, and addresses. Treat inspector output as private — don't paste it into public issues or logs.
+
+> **Note:** Stop Mission Control before `db:reset` — deleting the SQLite file (and its WAL/SHM sidecars) while the app holds it open can behave unpredictably.
+
 ### Environment variables
 
 Everything works with **none** set. All are optional:
