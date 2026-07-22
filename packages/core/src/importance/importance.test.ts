@@ -11,6 +11,7 @@ import {
 } from "../domain/index.js";
 import { contextProjection, type ContextState } from "../understanding/context.js";
 import {
+  importanceContributionFor,
   importanceFor,
   importanceScore,
   originatorFor,
@@ -359,5 +360,53 @@ describe("personalImportanceProjection: folding (#65)", () => {
     ];
     const state = foldImportance([...history(gmail, "g"), ...history(github, "h")]);
     expect(importanceFor(state, gmail)).toBe(importanceFor(state, github));
+  });
+});
+
+// --- importanceContributionFor: the plain data prioritize() actually sees -----
+
+describe("importanceContributionFor: evidence only when the score is off-neutral (#65)", () => {
+  const context = contextFrom([message("m1", "t1", "2026-07-15T12:00:00.000Z", "dana@acme.com")]);
+  const subject = { kind: "thread" as const, id: "t1" };
+
+  it("is neutral with empty evidence when the originator has no history at all", () => {
+    const contribution = importanceContributionFor(subject, context, personalImportanceProjection.init());
+    expect(contribution).toMatchObject({ score: NEUTRAL_IMPORTANCE, evidenceEventIds: [] });
+  });
+
+  it("stays neutral with empty evidence below the two-decisive-action threshold (sparse history)", () => {
+    // One acted Event exists (and is recorded on the entry), but a single decisive
+    // action must not move the score, and the below-threshold entry must not leak
+    // out as evidence for a score that never actually moved.
+    const state = foldImportance([action(EventTypes.WorkItemActedOn, "act-1", DANA)]);
+    const contribution = importanceContributionFor(subject, context, state);
+    expect(contribution).toMatchObject({ score: NEUTRAL_IMPORTANCE, evidenceEventIds: [] });
+  });
+
+  it("stays neutral with empty evidence at an exact acted/dismissed balance", () => {
+    // Two decisive actions exist (clearing the threshold) but they cancel out to
+    // exactly neutral; the entry's evidence ids must still not be exposed.
+    const state = foldImportance([
+      action(EventTypes.WorkItemActedOn, "act-1", DANA),
+      action(EventTypes.WorkItemDismissed, "act-2", DANA),
+    ]);
+    const contribution = importanceContributionFor(subject, context, state);
+    expect(contribution).toMatchObject({ score: NEUTRAL_IMPORTANCE, evidenceEventIds: [] });
+  });
+
+  it("exposes the exact evidence ids once the score is genuinely off-neutral", () => {
+    const state = foldImportance([
+      action(EventTypes.WorkItemActedOn, "act-1", DANA),
+      action(EventTypes.WorkItemActedOn, "act-2", DANA),
+    ]);
+    const contribution = importanceContributionFor(subject, context, state);
+    expect(contribution?.score).toBeCloseTo(0.75, 10);
+    expect(contribution?.evidenceEventIds).toEqual(["act-1", "act-2"]);
+  });
+
+  it("returns null (no contribution at all) when there is no meaningful originator", () => {
+    const checkContext = contextFrom([]);
+    const contribution = importanceContributionFor({ kind: "check", id: "x" }, checkContext, personalImportanceProjection.init());
+    expect(contribution).toBeNull();
   });
 });

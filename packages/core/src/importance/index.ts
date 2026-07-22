@@ -179,9 +179,15 @@ export function importanceContributionFor(
   const resolved = resolveOriginator(subject, context);
   if (!resolved) return null;
   const entry = state.byOriginator[originatorKey(resolved.originator)];
+  const score = entry ? importanceScore(entry) : NEUTRAL_IMPORTANCE;
+  // Evidence is provenance for a score that actually moved ranking. Below the
+  // two-decisive-action threshold, and at an exact acted/dismissed balance, the
+  // score stays neutral even though `entry` (and its ids) exists — that history
+  // must not leak out as if it justified something (the interface promises
+  // "empty if neutral").
   return {
-    score: entry ? importanceScore(entry) : NEUTRAL_IMPORTANCE,
-    evidenceEventIds: entry ? entry.evidenceEventIds : [],
+    score,
+    evidenceEventIds: entry && score !== NEUTRAL_IMPORTANCE ? entry.evidenceEventIds : [],
     originatorName: resolved.displayName,
   };
 }

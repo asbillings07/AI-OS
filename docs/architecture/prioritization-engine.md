@@ -33,7 +33,7 @@ Prioritization weighs four **independent, intrinsic** dimensions plus one **lear
 
 > **v0.1 note — the Commitment input is currently a blend.** In code the Commitment factor takes the stronger of an explicit obligation (a `Commitment` Signal, e.g. an assignment or a review requested from you) and a relationship-derived expectation (a `FromKnownPerson` Signal). These are not conceptually identical — one is a duty, the other is social weight — so the computation names the combined value honestly (`responsibilityStrength`) rather than pretending they are the same. They may split into separate dimensions later.
 
-> **v0.1 note — Personal Importance is a bounded adjustment, not a fifth vote of equal weight.** It moves `priority` by at most a small, symmetric amount around neutral (see [ADR-0014](../adr/0014-personal-importance-from-dispositions.md) for the exact v1 curve and weight), and it is a tie-break *after* Urgency, Commitment, and Opportunity — never the deciding factor when the intrinsic reasoning already disagrees.
+> **v0.1 note — Personal Importance is a bounded adjustment, not a fifth vote of equal weight.** It moves `priority` by at most a small, symmetric amount around neutral (see [ADR-0014](../adr/0014-personal-importance-from-dispositions.md) for the exact v1 curve and weight). Personal Importance can decide close calls between intrinsic scores, but its bounded adjustment prevents it from overcoming sufficiently large intrinsic differences. On an exact final-priority tie, Urgency, Commitment, and Opportunity remain earlier tie-breakers.
 
 ```
   Opportunity          ┐

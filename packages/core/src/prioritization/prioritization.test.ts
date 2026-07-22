@@ -301,10 +301,34 @@ describe("Personal Importance integration (#65)", () => {
     expect(item?.importanceEvidenceEventIds).not.toEqual(item?.attentionBasisEventIds);
   });
 
-  it("omits the importance sentence and evidence when the score is neutral", () => {
+  it("omits the importance sentence and evidence when there is no history at all", () => {
     const context = contextOf([message({ threadId: "t1", messageId: "m1" })]);
     const [item] = items(context, NOON);
     expect(item?.reason).not.toContain("dismissed");
+    expect(item?.importanceEvidenceEventIds).toEqual([]);
+  });
+
+  it("omits the importance sentence and evidence for a sparse (below-threshold) history", () => {
+    const context = contextOf([message({ threadId: "t1", messageId: "m1" })]);
+    // A single acted Event exists for Dana — below the two-decisive-action
+    // threshold, so the score stays neutral and must not leak evidence/wording.
+    const importance = foldImportance([actedOn("act-1", { kind: "thread", id: "t1" }, DANA)]);
+    const [item] = buildWorkItems({ context, attention: NO_ATTENTION, importance, now: NOON });
+    expect(item?.reason).not.toContain("dismissed");
+    expect(item?.importance).toBe(NEUTRAL_IMPORTANCE);
+    expect(item?.importanceEvidenceEventIds).toEqual([]);
+  });
+
+  it("omits the importance sentence and evidence for an exact acted/dismissed balance", () => {
+    const context = contextOf([message({ threadId: "t1", messageId: "m1" })]);
+    const importance = foldImportance([
+      actedOn("act-1", { kind: "thread", id: "t1" }, DANA),
+      dismissed("act-2", { kind: "thread", id: "t1" }, DANA),
+    ]);
+    const [item] = buildWorkItems({ context, attention: NO_ATTENTION, importance, now: NOON });
+    expect(item?.reason).not.toContain("acted");
+    expect(item?.reason).not.toContain("dismissed");
+    expect(item?.importance).toBe(NEUTRAL_IMPORTANCE);
     expect(item?.importanceEvidenceEventIds).toEqual([]);
   });
 
