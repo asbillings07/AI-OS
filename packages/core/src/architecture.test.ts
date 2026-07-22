@@ -31,6 +31,7 @@ const WORKSPACE_PACKAGES: ReadonlyArray<{ dir: string; name: string }> = [
   { dir: "packages/core", name: "@orion/core" },
   { dir: "packages/ai", name: "@orion/ai" },
   { dir: "packages/gmail-skill", name: "@orion/gmail-skill" },
+  { dir: "packages/gmail-auth", name: "@orion/gmail-auth" },
   { dir: "packages/github-skill", name: "@orion/github-skill" },
   { dir: "packages/fixtures", name: "@orion/fixtures" },
   { dir: "apps/mission-control", name: "@orion/mission-control" },
@@ -75,6 +76,16 @@ const RULES: readonly PackageRule[] = [
     forbiddenExternal: [...UI, ...PROVIDER_SDKS],
   },
   {
+    // Gmail authorization (ADR-0013) is an integration adapter, not a Skill. It
+    // depends only on the Gmail Skill's token seam (AccessTokenProvider) and its
+    // own storage/OAuth deps (better-sqlite3, google-auth-library). No domain,
+    // no other Skill, no AI layer, no UI, no provider SDKs.
+    name: "@orion/gmail-auth",
+    dir: "packages/gmail-auth",
+    allowedWorkspace: ["@orion/gmail-skill"],
+    forbiddenExternal: [...UI, ...PROVIDER_SDKS],
+  },
+  {
     // The second Skill mirrors the first: core + fixtures only. It must not reach
     // into the Gmail Skill, the AI layer, UI, or provider SDKs.
     name: "@orion/github-skill",
@@ -97,6 +108,7 @@ const RULES: readonly PackageRule[] = [
       "@orion/core",
       "@orion/ai",
       "@orion/gmail-skill",
+      "@orion/gmail-auth",
       "@orion/github-skill",
       "@orion/fixtures",
     ],

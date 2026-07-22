@@ -204,3 +204,70 @@ body {
   color: var(--ink-faint);
   text-align: center;
 }
+
+/* Gmail source status — quiet by default, only loud when action is needed. */
+.masthead__notice {
+  margin: 16px 0 0;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: #eef2f8;
+  color: var(--accent);
+  font-size: 14px;
+}
+
+.gmail {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 20px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.gmail__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ink-faint);
+  flex: none;
+}
+
+.gmail--ok .gmail__dot {
+  background: #2f7d54;
+}
+
+.gmail--warn .gmail__dot,
+.gmail--action .gmail__dot {
+  background: #c08a2d;
+}
+
+.gmail__label {
+  flex: 1;
+}
+
+.gmail__issues {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--ink-soft);
+}
+
+.gmail__button {
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  background: transparent;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.gmail__button--muted {
+  border-color: var(--line);
+  color: var(--ink-soft);
+}
