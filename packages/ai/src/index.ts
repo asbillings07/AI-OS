@@ -29,9 +29,11 @@ export interface CreateAiOptions {
   /**
    * Default true. An explicit value here always wins over `ORION_AI_CACHE`
    * (the env var is consulted only when this is omitted) — see
-   * `resolveCacheEnabled`.
+   * `resolveCacheEnabled`. `executionProfile`/`onUsage` are omitted: this
+   * function derives and passes both itself, so advertising them here would
+   * invite a caller to set values `createAi()` silently overrides.
    */
-  cache?: boolean | AiCacheOptions;
+  cache?: boolean | Omit<AiCacheOptions, "executionProfile" | "onUsage">;
 }
 
 function selectProvider(env: Record<string, string | undefined>): AiProvider {
@@ -60,7 +62,7 @@ function cacheEnabledFromEnv(env: Record<string, string | undefined>): boolean {
 }
 
 function resolveCacheEnabled(
-  cache: boolean | AiCacheOptions | undefined,
+  cache: boolean | Omit<AiCacheOptions, "executionProfile" | "onUsage"> | undefined,
   env: Record<string, string | undefined>,
 ): boolean {
   if (typeof cache === "boolean") return cache;
@@ -110,7 +112,7 @@ export function createAi(options: CreateAiOptions = {}): AiCapabilities {
   const cacheOptions = typeof options.cache === "object" ? options.cache : {};
   return withCache(layer, {
     ...cacheOptions,
-    executionProfile: { provider: provider.name, model: provider.modelName },
+    executionProfile: { provider: provider.name, modelName: provider.modelName },
     onUsage: safelyObserve,
   });
 }

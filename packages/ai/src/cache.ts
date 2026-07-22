@@ -19,7 +19,7 @@ import type {
 /** The provider + model identity a cached entry (and its key) is scoped to. */
 export interface ExecutionProfile {
   readonly provider: string;
-  readonly model?: string;
+  readonly modelName?: string;
 }
 
 interface NormalizedSummarizeRequest {
@@ -63,6 +63,23 @@ export interface CacheKeyInput {
 }
 
 /**
+ * `JSON.stringify` collapses `NaN`, `Infinity`, and `-Infinity` all to the
+ * literal `null`, which would silently collide three observably-different
+ * `maxSentences` values (`HttpAiProvider` puts the value straight into its
+ * prompt) into one cache key. Tag any non-finite number so it round-trips to
+ * a distinct, stable string instead of `null` — the tag shape can never
+ * collide with a legitimate string/number field, since it only ever replaces
+ * an actual `number`-typed value, never a string.
+ */
+function stableStringify(value: unknown): string {
+  return JSON.stringify(value, (_key, val) =>
+    typeof val === "number" && !Number.isFinite(val)
+      ? { __nonFiniteNumber: Number.isNaN(val) ? "NaN" : val > 0 ? "Infinity" : "-Infinity" }
+      : val,
+  );
+}
+
+/**
  * Pure, exported so version/profile isolation is unit-testable directly
  * (#80): every field is explicit input, never a closed-over module constant.
  *
@@ -71,12 +88,12 @@ export interface CacheKeyInput {
  * order-dependent, so reordered labels are a genuinely different request.
  */
 export function computeCacheKey(input: CacheKeyInput): string {
-  const material = JSON.stringify([
+  const material = stableStringify([
     input.capability,
     input.schemaVersion,
     input.promptVersion,
     input.executionProfile.provider,
-    input.executionProfile.model ?? "",
+    input.executionProfile.modelName ?? "",
     input.request,
   ]);
   return createHash("sha256").update(material).digest("hex");
@@ -122,6 +139,17 @@ export interface AiCacheOptions {
   /** Folded into the cache key and preserved on every entry for auditability. */
   executionProfile?: ExecutionProfile;
   onUsage?: (observation: AiObservation) => void;
+}
+
+/**
+ * Shallow clone. Cached results (`SummarizeResult`/`ClassifyResult`) are flat
+ * value objects, so this is sufficient: every caller — a hit, a coalesced
+ * joiner, and the original delegator alike — gets its own object, so one
+ * caller mutating its returned value can never corrupt the shared cache entry
+ * or another caller's copy.
+ */
+function cloneResult<T extends { confidence: number }>(result: T): T {
+  return { ...result };
 }
 
 interface CacheEntry {
@@ -220,7 +248,7 @@ export function withCache(inner: AiCapabilities, options: AiCacheOptions = {}): 
           cache,
           confidence: result.confidence,
         });
-        return result;
+        return cloneResult(result);
       } catch (error) {
         // A coalesced joiner never deletes the entry itself — only the
         // original delegator's guarded catch below does (identity-checked),
@@ -245,12 +273,17 @@ export function withCache(inner: AiCapabilities, options: AiCacheOptions = {}): 
       state: "pending",
       capability,
       provider: executionProfile.provider,
-      modelName: executionProfile.model,
+      modelName: executionProfile.modelName,
     };
     store.set(key, entry);
 
     try {
       const result = await promise;
+      // Freeze the cache-owned value once, here, at the moment it's captured
+      // — every future hit/coalesced read shares this exact object (the same
+      // settled promise), so freezing it here protects all of them. Callers
+      // never receive this object directly; see `cloneResult` below.
+      Object.freeze(result);
       // Identity-checked: only this entry's own transition may promote it.
       if (store.get(key) === entry) {
         entry.state = "resolved";
@@ -262,7 +295,7 @@ export function withCache(inner: AiCapabilities, options: AiCacheOptions = {}): 
         store.set(key, entry);
         enforceCapacity();
       }
-      return result;
+      return cloneResult(result);
     } catch (error) {
       // Never cache a failure — and never let a stale/superseded entry delete
       // a newer one that has since taken its slot.

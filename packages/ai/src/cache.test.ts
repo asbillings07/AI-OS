@@ -52,7 +52,7 @@ function controllableSummarizer(autoSummary: string) {
 }
 
 describe("computeCacheKey (#80): pure, explicit contract material", () => {
-  const profile = { provider: "p", model: "m" };
+  const profile = { provider: "p", modelName: "m" };
   const request = { text: "hello", purpose: undefined, maxSentences: 2 };
   const base: CacheKeyInput = {
     capability: "summarize",
@@ -73,7 +73,7 @@ describe("computeCacheKey (#80): pure, explicit contract material", () => {
   });
 
   it("differs by execution profile model", () => {
-    expect(computeCacheKey({ ...base, executionProfile: { ...profile, model: "other-model" } })).not.toBe(
+    expect(computeCacheKey({ ...base, executionProfile: { ...profile, modelName: "other-model" } })).not.toBe(
       computeCacheKey(base),
     );
   });
@@ -105,6 +105,23 @@ describe("computeCacheKey (#80): pure, explicit contract material", () => {
     // this just pins that computeCacheKey is pure and reproducible.
     expect(computeCacheKey(base)).toBe(computeCacheKey({ ...base }));
   });
+
+  it("does not collapse NaN/Infinity/-Infinity into the same key (plain JSON.stringify would)", () => {
+    const keyFor = (maxSentences: number): string =>
+      computeCacheKey({ ...base, request: { ...request, maxSentences } });
+
+    const finite = keyFor(2);
+    const nan = keyFor(Number.NaN);
+    const positiveInfinity = keyFor(Number.POSITIVE_INFINITY);
+    const negativeInfinity = keyFor(Number.NEGATIVE_INFINITY);
+
+    // Sanity check on the premise: naive JSON.stringify really does conflate these.
+    expect(JSON.stringify(Number.NaN)).toBe(JSON.stringify(Number.POSITIVE_INFINITY));
+    expect(JSON.stringify(Number.NaN)).toBe(JSON.stringify(Number.NEGATIVE_INFINITY));
+
+    const keys = [finite, nan, positiveInfinity, negativeInfinity];
+    expect(new Set(keys).size).toBe(keys.length);
+  });
 });
 
 describe("withCache (#80)", () => {
@@ -124,7 +141,30 @@ describe("withCache (#80)", () => {
     const first = await ai.summarize({ text: "hello" });
     const second = await ai.summarize({ text: "hello" });
     expect(calls).toBe(1);
-    expect(second).toBe(first);
+    expect(second).toEqual(first);
+  });
+
+  it("mutating one caller's returned result cannot corrupt a later cache hit (regression)", async () => {
+    const inner: AiCapabilities = {
+      providerName: "fake",
+      async summarize(request) {
+        return { summary: request.text, confidence: 0.42 };
+      },
+      async classify() {
+        throw new Error("unused");
+      },
+    };
+    const ai = withCache(inner);
+    const first = await ai.summarize({ text: "hello" });
+    // Each caller gets its own clone, so mutating it is unremarkable — the
+    // point is that it can never reach the cache's internal, frozen original.
+    first.summary = "corrupted";
+    first.confidence = 99;
+
+    const second = await ai.summarize({ text: "hello" });
+    expect(second.summary).toBe("hello");
+    expect(second.confidence).toBe(0.42);
+    expect(second).not.toBe(first);
   });
 
   it("an omitted maxSentences and the explicit documented default (2) share a key", async () => {
@@ -143,6 +183,25 @@ describe("withCache (#80)", () => {
     await ai.summarize({ text: "same" });
     await ai.summarize({ text: "same", maxSentences: 2 });
     expect(calls).toBe(1);
+  });
+
+  it("NaN, Infinity, and -Infinity maxSentences are cached separately, never conflated (regression)", async () => {
+    const inner: AiCapabilities = {
+      providerName: "fake",
+      async summarize(request) {
+        return { summary: `maxSentences:${request.maxSentences}`, confidence: 0.5 };
+      },
+      async classify() {
+        throw new Error("unused");
+      },
+    };
+    const ai = withCache(inner);
+    const nan = await ai.summarize({ text: "same", maxSentences: Number.NaN });
+    const positiveInfinity = await ai.summarize({ text: "same", maxSentences: Number.POSITIVE_INFINITY });
+    const negativeInfinity = await ai.summarize({ text: "same", maxSentences: Number.NEGATIVE_INFINITY });
+    expect(nan.summary).toBe("maxSentences:NaN");
+    expect(positiveInfinity.summary).toBe("maxSentences:Infinity");
+    expect(negativeInfinity.summary).toBe("maxSentences:-Infinity");
   });
 
   it("different text produces a different key — results are never conflated", async () => {
