@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { InProcessEventBus, SqliteEventStore, OrionRuntime, ProjectionHost } from "../index.js";
 import { makeEvent, type EventEnvelope } from "../events/index.js";
 import {
   EventTypes,
@@ -175,6 +176,33 @@ describe("originatorFor: source-provenance namespace (#65)", () => {
     });
   });
 
+  it("keeps latestSource coupled to latestEventId for a review's winning occurrence", () => {
+    // A newer review from actor A arrives, then an OLDER review from a different
+    // source/actor B is backfilled. The occurrence winner (latestEventId) must
+    // stay A's, so latestSource — and therefore the derived namespace — must
+    // stay A's too. This is the invariant Personal Importance depends on: the
+    // namespace can never drift from whichever occurrence actually won.
+    const context = contextFrom([
+      reviewEvent("r-new", "acme/orion#1", "2026-07-16T12:00:00.000Z", "dana", "github-skill"),
+      reviewEvent("r-old", "acme/orion#1", "2026-07-15T09:00:00.000Z", "bilbo", "gitlab-skill"),
+    ]);
+    expect(originatorFor({ kind: "review", id: "acme/orion#1" }, context)).toEqual({
+      namespace: "github-skill",
+      id: "dana",
+    });
+  });
+
+  it("keeps latestSource coupled to latestEventId for an assignment's winning occurrence", () => {
+    const context = contextFrom([
+      assignmentEvent("a-new", "acme/orion#2", "2026-07-16T12:00:00.000Z", "erin", "github-skill"),
+      assignmentEvent("a-old", "acme/orion#2", "2026-07-15T09:00:00.000Z", "frodo", "jira-skill"),
+    ]);
+    expect(originatorFor({ kind: "assignment", id: "acme/orion#2" }, context)).toEqual({
+      namespace: "github-skill",
+      id: "erin",
+    });
+  });
+
   it("returns null when there is no meaningful originator", () => {
     const context = contextFrom([reviewEvent("r1", "acme/orion#1", "2026-07-15T12:00:00.000Z", undefined)]);
     // A check has no person; a missing requester and an unknown subject resolve to nothing.
@@ -288,13 +316,37 @@ describe("personalImportanceProjection: folding (#65)", () => {
     expect(importanceFor(state, github)).toBeCloseTo(0.25, 10);
   });
 
-  it("rebuilds deterministically from the same event sequence (ADR-0009)", () => {
-    const events = [
-      action(EventTypes.WorkItemActedOn, "act-1", DANA),
-      action(EventTypes.WorkItemDismissed, "act-2", DANA),
-      action(EventTypes.WorkItemActedOn, "act-3", DANA),
-    ];
-    expect(foldImportance(events)).toEqual(foldImportance(events));
+  it("rebuilds an identical live state purely by replaying the log (ADR-0009)", async () => {
+    const store = new SqliteEventStore(":memory:");
+    try {
+      const liveHost = new ProjectionHost(personalImportanceProjection);
+      const liveRuntime = new OrionRuntime({
+        bus: new InProcessEventBus(),
+        store,
+        projections: [liveHost as ProjectionHost<unknown>],
+      });
+
+      await liveRuntime.record(action(EventTypes.WorkItemActedOn, "act-1", DANA));
+      await liveRuntime.record(action(EventTypes.WorkItemDismissed, "act-2", DANA));
+      await liveRuntime.record(action(EventTypes.WorkItemActedOn, "act-3", DANA));
+
+      const live = structuredClone(liveHost.state);
+
+      // A second runtime over the SAME store, with its own fresh projection host,
+      // proves the state above was actually reconstructed from the log — not just
+      // recomputed by the same in-memory fold.
+      const rebuiltHost = new ProjectionHost(personalImportanceProjection);
+      const rebuildRuntime = new OrionRuntime({
+        bus: new InProcessEventBus(),
+        store,
+        projections: [rebuiltHost as ProjectionHost<unknown>],
+      });
+      await rebuildRuntime.rebuild();
+
+      expect(rebuiltHost.state).toEqual(live);
+    } finally {
+      store.close();
+    }
   });
 
   it("is source-neutral: identical histories on a Gmail and a GitHub key score identically", () => {

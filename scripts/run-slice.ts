@@ -95,15 +95,20 @@ async function main(): Promise<void> {
           logger,
         }),
       );
-      // Trace the action only after it's durably recorded.
+      // Trace and re-render only after the action is durably recorded. In this
+      // deterministic in-memory run buildActionEvent cannot normally reject (the
+      // revision it recomputes is exactly the one just rendered above), but the
+      // slice should never claim "after your action" against an unrecorded state.
       if (recorded) {
         logger.event(LogEvents.UserActionRecorded, {
           action: "acted",
           workItemId: top.id,
           subject: `${top.subject.kind}:${top.subject.id}`,
         });
+        render(context.state, attention.state, "Mission Control (after your action)");
+      } else {
+        console.log("\n(Nothing recorded — the item's revision changed before the action landed.)");
       }
-      render(context.state, attention.state, "Mission Control (after your action)");
     }
 
     console.log("\nDone. Every ranking above was decided deterministically; no AI was required.");

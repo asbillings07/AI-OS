@@ -13,7 +13,7 @@ import { latestThreadMessage, type ContextState } from "../understanding/context
 /**
  * Personal Importance (#65): a bounded, ranking-specific behavioral signal learned
  * from the user's recorded dispositions — NOT an authoritative User Preference or
- * an established belief about the user (see ADR-0015). It answers one narrow
+ * an established belief about the user (see ADR-0014). It answers one narrow
  * question at ranking time: "does the user tend to act on, or dismiss, work from
  * this originator?"
  *
@@ -161,7 +161,7 @@ function applyDisposition(
 }
 
 /**
- * The Personal Importance projection (#65, ADR-0015): folds recorded dispositions
+ * The Personal Importance projection (#65, ADR-0014): folds recorded dispositions
  * into per-originator counts. Source-neutral by construction — it reads only the
  * stamped `OriginatorRef`, so a Gmail sender and a GitHub actor with identical
  * histories yield identical scores. Rebuildable from the log at any time.
