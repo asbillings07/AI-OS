@@ -12,3 +12,4 @@ export * from "./opportunity/index.js";
 export * from "./attention/index.js";
 export * from "./capacity/index.js";
 export * from "./prioritization/index.js";
+export * from "./work-item-actions/index.js";

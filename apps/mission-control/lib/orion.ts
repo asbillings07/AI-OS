@@ -8,15 +8,16 @@ import {
   contextProjection,
   attentionProjection,
   buildWorkItems,
+  buildActionEvent,
   createLogger,
   latestThreadMessage,
-  makeEvent,
-  EventTypes,
   LogEvents,
+  WORK_ITEM_ACTIONS,
   type AttentionState,
   type ContextState,
   type Logger,
   type WorkItem,
+  type WorkItemAction,
 } from "@orion/core";
 import { GmailSkill } from "@orion/gmail-skill";
 import { GitHubSkill } from "@orion/github-skill";
@@ -130,27 +131,28 @@ export async function readMissionControl(): Promise<MissionControlView> {
   };
 }
 
-export const WORK_ITEM_ACTIONS = ["acted", "snoozed", "dismissed"] as const;
-export type WorkItemAction = (typeof WORK_ITEM_ACTIONS)[number];
+// The action vocabulary lives in @orion/core (alongside buildActionEvent) so the
+// decision logic is testable without Next; re-exported here for the server action.
+export { WORK_ITEM_ACTIONS };
+export type { WorkItemAction };
 
 /**
  * Record a user's decision as a new Event. This closes the loop: the event
  * updates the Attention projection, which changes what's visible on the next read
  * (ADR-0002, ADR-0007, ADR-0008, ADR-0009, ADR-0012 all at once).
  *
- * The trust boundary is here. The client submits `workItemId` + `action` +
- * `revision`. We re-resolve the item against what is *currently visible* and derive
- * the Subject and attention basis from that surfaced Work Item — never from client
- * input. The `revision` is an optimistic-concurrency token, NOT trusted data: we
- * recompute the current item's token and record only if it matches, so an action
- * the user took against a card cannot silently apply to a newer revision that
- * arrived in between (a TOCTOU race that would suppress information they never saw).
+ * The trust boundary lives in `buildActionEvent` (@orion/core): the client submits
+ * `workItemId` + `action` + `revision`, and the server re-resolves the item against
+ * what is *currently visible*, derives Subject and basis from that surfaced Work
+ * Item (never from client input), and records only if the recomputed revision token
+ * still matches — so an action cannot silently apply to a newer revision.
  *
- * We also verify the item is visible, its Subject is valid, and its basis is
- * nonempty before writing. A forged/stale id, or a stale revision, records nothing
- * (never pollute the immutable log) and returns false; the caller then refreshes to
- * current truth. Duplicate submissions are benign: once acted/snoozed/dismissed the
- * item is no longer visible, so a repeat resolves to nothing.
+ * The decision runs *inside* `recordExclusive`, so the visibility/revision check
+ * and the append are one serialized critical section (#61): two concurrent submits
+ * against the same revision cannot both land — the second re-resolves, sees the
+ * item gone, and records nothing. Deterministic action ids dedupe exact duplicates
+ * on the log even across processes/replay. `now` is generated inside the callback
+ * so visibility and the snooze deadline reflect when the section actually runs.
  *
  * Returns whether an event was recorded.
  */
@@ -161,61 +163,22 @@ export async function recordAction(
 ): Promise<boolean> {
   const { runtime, context, attention, logger } = await getService();
 
-  const surfaced = buildWorkItems({
-    context: context.state,
-    attention: attention.state,
-    now: new Date().toISOString(),
-    logger,
-  }).find((item) => item.id === workItemId);
-
-  // Only act on a currently-visible item with a valid Subject and a nonempty basis.
-  if (!surfaced || !surfaced.subject?.id || surfaced.attentionBasisEventIds.length === 0) {
-    return false;
-  }
-
-  // Optimistic concurrency: the card the user acted on must still be the current
-  // revision. A mismatch means a newer occurrence arrived; reject and let the view
-  // refresh rather than suppress something the user never saw.
-  if (surfaced.attentionRevision !== revision) {
-    return false;
-  }
-
-  const base = {
-    workItemId,
-    subject: surfaced.subject,
-    basisEventIds: surfaced.attentionBasisEventIds,
-  } as const;
-
-  switch (action) {
-    case "acted":
-      await runtime.record(
-        makeEvent({ type: EventTypes.WorkItemActedOn, source: "user", payload: base }),
-      );
-      break;
-    case "dismissed":
-      await runtime.record(
-        makeEvent({ type: EventTypes.WorkItemDismissed, source: "user", payload: base }),
-      );
-      break;
-    case "snoozed": {
-      const snoozedUntil = new Date(Date.now() + 24 * 3_600_000).toISOString();
-      await runtime.record(
-        makeEvent({
-          type: EventTypes.WorkItemSnoozed,
-          source: "user",
-          payload: { ...base, snoozedUntil },
-        }),
-      );
-      break;
-    }
-  }
+  const recorded = await runtime.recordExclusive(() =>
+    buildActionEvent({
+      context: context.state,
+      attention: attention.state,
+      now: new Date().toISOString(),
+      workItemId,
+      action,
+      revision,
+      logger,
+    }),
+  );
 
   // Only after the record durably succeeds — the trace must not claim an action
-  // was recorded if persistence threw.
-  logger.event(LogEvents.UserActionRecorded, {
-    action,
-    workItemId,
-    subject: `${surfaced.subject.kind}:${surfaced.subject.id}`,
-  });
-  return true;
+  // was recorded if persistence threw or the decision recorded nothing.
+  if (recorded) {
+    logger.event(LogEvents.UserActionRecorded, { action, workItemId });
+  }
+  return recorded;
 }
