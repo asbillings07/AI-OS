@@ -19,9 +19,11 @@ import {
   type WorkItem,
   type WorkItemAction,
 } from "@orion/core";
-import { GmailSkill } from "@orion/gmail-skill";
 import { GitHubSkill } from "@orion/github-skill";
 import { createAi, type AiCapabilities } from "@orion/ai";
+import type { GmailIntegrationState } from "@orion/gmail-auth";
+import { getGmailIntegration } from "./gmail-auth";
+import { syncConfiguredGmail, type GmailSyncResult } from "./gmail-sync";
 
 interface OrionService {
   runtime: OrionRuntime;
@@ -55,13 +57,11 @@ async function boot(): Promise<OrionService> {
     logger,
   });
 
-  // Rebuild understanding from the log (ADR-0009), then seed each fixture Skill
-  // idempotently. Deterministic event ids dedupe on the append-only store, so
-  // re-seeding on every boot is a no-op once present, and an existing Gmail-only
-  // log also picks up GitHub. Both Sources surface as source-neutral Work Items
-  // through the same decision layer (#46).
+  // Rebuild understanding from the log (ADR-0009). GitHub still seeds from
+  // fixtures at boot (idempotent by event id). Gmail is NOT ingested here — it is
+  // synced at read time (see readMissionControl -> syncConfiguredGmail) so a
+  // freshly connected account appears on the next render without a restart.
   await runtime.rebuild();
-  await new GmailSkill().ingest(runtime);
   await new GitHubSkill().ingest(runtime);
 
   // The AI chokepoint reports usage; route it to the same structured trace.
@@ -84,15 +84,23 @@ export interface MissionControlView {
   canWait: WorkItem[];
   generatedAt: string;
   providerName: string;
+  gmail: GmailIntegrationState;
+  gmailSync: GmailSyncResult;
 }
 
 /**
  * The read model Mission Control renders. Work Items come from deterministic
  * prioritization; the AI summary is layered on afterward as advisory context
  * only — every item's `reason`/`evidence` already explains itself without AI.
+ *
+ * Gmail is ingested here, at read time, before Work Items are built, so a newly
+ * connected account shows up immediately. A live sync failure is surfaced via
+ * `gmailSync` and never substitutes fixtures.
  */
 export async function readMissionControl(): Promise<MissionControlView> {
-  const { context, attention, ai, logger } = await getService();
+  const { context, attention, ai, logger, runtime } = await getService();
+  const gmailSync = await syncConfiguredGmail(runtime);
+  const gmail = await getGmailIntegration().state();
   const now = new Date().toISOString();
   const items = buildWorkItems({ context: context.state, attention: attention.state, now, logger });
 
@@ -128,6 +136,8 @@ export async function readMissionControl(): Promise<MissionControlView> {
     canWait: enriched.filter((item) => item.band === "can_wait"),
     generatedAt: now,
     providerName: ai.providerName,
+    gmail,
+    gmailSync,
   };
 }
 

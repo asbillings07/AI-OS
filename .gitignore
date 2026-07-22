@@ -17,8 +17,8 @@ apps/**/out/
 .data/
 
 # Secrets — never commit (ADR-0010: Skills own their own credentials)
-.env
-.env.local
+.env*
+!.env.example
 *.secret.json
 gmail-credentials.json
 gmail-token.json

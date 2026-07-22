@@ -1,8 +1,85 @@
 import type { WorkItem } from "@orion/core";
-import { readMissionControl } from "../lib/orion";
+import type { GmailIntegrationState } from "@orion/gmail-auth";
+import { readMissionControl, type MissionControlView } from "../lib/orion";
 import { actOnWorkItem } from "./actions";
 
 export const dynamic = "force-dynamic";
+
+const CALLBACK_MESSAGES: Record<string, string> = {
+  connected: "Gmail connected.",
+  denied: "Gmail connection was cancelled.",
+  account_mismatch: "That Google account does not match the configured Gmail account.",
+  state_mismatch: "The security check failed. Please try connecting again.",
+  rejected: "Authorization was incomplete (missing refresh token or gmail.readonly).",
+  not_configured: "Gmail live mode is not configured.",
+  error: "Something went wrong connecting Gmail.",
+};
+
+function GmailStatus({ state, sync }: { state: GmailIntegrationState; sync: MissionControlView["gmailSync"] }) {
+  if (state.mode === "fixture") {
+    return (
+      <div className="gmail gmail--fixture">
+        <span className="gmail__dot" aria-hidden />
+        <span className="gmail__label">Reading fixture inbox (development)</span>
+      </div>
+    );
+  }
+
+  if (state.auth === "misconfigured") {
+    return (
+      <div className="gmail gmail--warn">
+        <span className="gmail__dot" aria-hidden />
+        <div>
+          <span className="gmail__label">Gmail live mode is misconfigured</span>
+          <ul className="gmail__issues">
+            {state.issues.map((issue, index) => (
+              <li key={index}>{issue}</li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    );
+  }
+
+  if (state.auth === "disconnected") {
+    return (
+      <div className="gmail gmail--action">
+        <span className="gmail__dot" aria-hidden />
+        <span className="gmail__label">Gmail not connected</span>
+        <a className="gmail__button" href="/api/gmail/connect">
+          Connect Gmail
+        </a>
+      </div>
+    );
+  }
+
+  if (state.auth === "reconnect_required") {
+    return (
+      <div className="gmail gmail--warn">
+        <span className="gmail__dot" aria-hidden />
+        <span className="gmail__label">Gmail authorization expired — {state.account}</span>
+        <a className="gmail__button" href="/api/gmail/connect">
+          Reconnect Gmail
+        </a>
+      </div>
+    );
+  }
+
+  return (
+    <div className="gmail gmail--ok">
+      <span className="gmail__dot" aria-hidden />
+      <span className="gmail__label">
+        Gmail connected — {state.account}
+        {!sync.ok ? " (last sync failed; showing earlier mail)" : null}
+      </span>
+      <form method="post" action="/api/gmail/disconnect">
+        <button type="submit" className="gmail__button gmail__button--muted">
+          Disconnect
+        </button>
+      </form>
+    </div>
+  );
+}
 
 function greeting(now: Date): string {
   const hour = now.getHours();
@@ -87,9 +164,16 @@ function Card({ item, muted }: { item: WorkItem; muted?: boolean }) {
   );
 }
 
-export default async function Page() {
+export default async function Page({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const view = await readMissionControl();
   const now = new Date(view.generatedAt);
+  const params = await searchParams;
+  const callbackKey = typeof params.gmail === "string" ? params.gmail : undefined;
+  const callbackMessage = callbackKey ? CALLBACK_MESSAGES[callbackKey] : undefined;
 
   return (
     <main className="shell">
@@ -103,6 +187,8 @@ export default async function Page() {
                 view.needsAttention.length === 1 ? "" : "s"
               } deserve your attention. Everything else can wait.`}
         </p>
+        {callbackMessage ? <p className="masthead__notice">{callbackMessage}</p> : null}
+        <GmailStatus state={view.gmail} sync={view.gmailSync} />
       </header>
 
       {view.needsAttention.length > 0 ? (

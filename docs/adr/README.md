@@ -59,6 +59,7 @@ These establish *how Orion is built*. Each records a **durable, vendor-agnostic 
 | [0010](./0010-skill-architecture.md) | Skill Architecture (extend via events and Context, never the core) | Accepted |
 | [0011](./0011-ai-abstraction-layer.md) | AI Abstraction Layer (ask for capabilities, not providers) | Accepted |
 | [0012](./0012-attention-is-a-projection-distinct-from-context.md) | Attention is a Projection, Distinct from Context (source-neutral suppression) | Accepted |
+| [0013](./0013-gmail-authorization-and-credential-storage.md) | Gmail Authorization and Credential Storage (server-side OAuth, encrypted refresh token, read-time sync) | Accepted |
 
 (Note: some GitHub issue titles use provisional labels like "ADR-002: Event Bus." Those labels predate this numbering scheme; the canonical ids are assigned here when the ADR is written — e.g. issue #21 became ADR-0008.)
 
