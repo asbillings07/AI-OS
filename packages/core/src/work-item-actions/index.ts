@@ -94,6 +94,13 @@ export interface BuildActionEventInput {
 export function buildActionEvent(input: BuildActionEventInput): EventEnvelope | null {
   const { context, attention, now, workItemId, action, revision } = input;
 
+  // Trust boundary: this is exported, so guard the action at runtime rather than
+  // relying on the caller's compile-time type. An unsupported action records
+  // nothing (never an Event with `type: undefined`).
+  if (!(WORK_ITEM_ACTIONS as readonly string[]).includes(action)) {
+    return null;
+  }
+
   const surfaced = buildWorkItems({ context, attention, now, logger: input.logger }).find(
     (item) => item.id === workItemId,
   );

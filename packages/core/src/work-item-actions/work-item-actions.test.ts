@@ -136,6 +136,23 @@ describe("work-item-actions: the revision guard is enforced at record time (#61)
     expect(recorded).toBe(false);
     expect(userEvents(h)).toHaveLength(0);
   });
+
+  it("records nothing for an unsupported action, even at a valid revision", async () => {
+    const h = harness();
+    await h.runtime.record(reviewEvent("r1", "2026-07-15T12:00:00.000Z"));
+    const item = reviewItem(h);
+
+    // A hostile/forged action that bypassed compile-time typing must never mint
+    // an Event with `type: undefined` — the exported trust boundary guards it.
+    const recorded = await submit(
+      h,
+      item.id,
+      "obliterate" as unknown as WorkItemAction,
+      item.attentionRevision,
+    );
+    expect(recorded).toBe(false);
+    expect(userEvents(h)).toHaveLength(0);
+  });
 });
 
 describe("actionEventId: one deterministic id per action cycle (#61)", () => {

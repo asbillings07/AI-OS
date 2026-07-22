@@ -68,11 +68,14 @@ export class OrionRuntime {
    * publish only if it yields an event. The contract:
    *
    *  - **Atomic check-and-record.** `build` runs *after* every prior record has
-   *    fully applied to projections, so it can re-check current state (e.g. "is
-   *    this Work Item still visible at this revision?") and abort by returning
-   *    `null`. The check and the append are one critical section, closing the
+   *    finished processing, so it can re-check current state (e.g. "is this Work
+   *    Item still visible at this revision?") and abort by returning `null`. The
+   *    check and the append are one critical section, closing the
    *    time-of-check/time-of-use gap a separate check-then-`record` leaves open.
    *    `build` must be **synchronous and side-effect-free** — it only decides.
+   *    Note the projections `build` reads are current only for prior records that
+   *    *published successfully*; a prior publish failure (below) advances the
+   *    queue but may leave projections partially applied until `rebuild()`.
    *  - **Delivery idempotency.** Appending is idempotent by event id, and a
    *    duplicate is *not* re-delivered — storage idempotency alone would still
    *    let projections double-apply, so we publish only when the append newly
