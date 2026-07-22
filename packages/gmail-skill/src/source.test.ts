@@ -420,7 +420,8 @@ describe("LiveGmailSource", () => {
 
     const h = makeSource(fetchImpl);
     expect((await h.source.fetchMessages()).map((m) => m.id)).toEqual(["m1"]);
-    expect(retries(h)[0]!.fields).toMatchObject({ operation: "message", reason: "network" });
+    // status is the real 200 (body read failed), not 0 — matters for diagnostics.
+    expect(retries(h)[0]!.fields).toMatchObject({ operation: "message", reason: "network", status: 200 });
   });
 
   it("retries a list body-read failure then succeeds", async () => {

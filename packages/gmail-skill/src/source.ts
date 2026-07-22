@@ -420,11 +420,13 @@ export class LiveGmailSource implements GmailSource {
           headers: { authorization: `Bearer ${token}` },
           signal: AbortSignal.any([ctx.deadlineSignal, AbortSignal.timeout(Math.min(this.#timeoutMs, remaining))]),
         });
+        // Capture the status as soon as we have it so a body-read failure on an
+        // otherwise-2xx response is traced with its real status, not 0.
+        status = response.status;
         // Body consumption is part of the request: a success is only a success
         // once the JSON is fully read and parsed.
         if (response.ok) return (await response.json()) as T;
 
-        status = response.status;
         if (status === 401) {
           throw new GmailAuthError(`Gmail API authentication failed (401) (${safeUrl})`);
         }
