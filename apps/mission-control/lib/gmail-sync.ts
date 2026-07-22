@@ -1,4 +1,4 @@
-import type { OrionRuntime } from "@orion/core";
+import { LogEvents, type Logger, type OrionRuntime } from "@orion/core";
 import { GmailSkill, LiveGmailSource, GmailAuthError } from "@orion/gmail-skill";
 import { ReconnectRequiredError } from "@orion/gmail-auth";
 import { getGmailIntegration } from "./gmail-auth";
@@ -13,6 +13,8 @@ export interface GmailSyncResult {
   readonly ok: boolean;
   /** Number of Gmail messages submitted this sync (idempotent on the log). */
   readonly ingested: number;
+  /** Messages listed but abandoned this sync after best-effort hydration. */
+  readonly dropped?: number;
   readonly skipped?: "disconnected" | "reconnect_required" | "misconfigured";
   readonly error?: string;
 }
@@ -26,17 +28,20 @@ let inFlight: Promise<GmailSyncResult> | null = null;
  * render without a restart. Deterministic Gmail event ids keep repeat ingestion
  * idempotent, so previously ingested messages remain available even if this
  * attempt times out or fails. A live failure NEVER falls back to fixtures.
+ *
+ * Takes the logger already created in `orion.ts` so live resilience traces (retry,
+ * drop) join the same structured stream — no second logger.
  */
-export function syncConfiguredGmail(runtime: OrionRuntime): Promise<GmailSyncResult> {
+export function syncConfiguredGmail(runtime: OrionRuntime, logger: Logger): Promise<GmailSyncResult> {
   if (!inFlight) {
-    inFlight = runSync(runtime).finally(() => {
+    inFlight = runSync(runtime, logger).finally(() => {
       inFlight = null;
     });
   }
   return inFlight;
 }
 
-async function runSync(runtime: OrionRuntime): Promise<GmailSyncResult> {
+async function runSync(runtime: OrionRuntime, logger: Logger): Promise<GmailSyncResult> {
   const integration = getGmailIntegration();
   const state = await integration.state();
 
@@ -56,13 +61,23 @@ async function runSync(runtime: OrionRuntime): Promise<GmailSyncResult> {
   }
 
   try {
+    // Count drops from the trace stream: partial success stays healthy, but a sync
+    // that listed messages and hydrated none is not (see the ok computation below).
+    let dropped = 0;
     const source = new LiveGmailSource({
       tokenProvider: service,
       query: "in:inbox newer_than:7d",
-      maxResults: 25,
+      maxMessages: 100,
+      onTrace: (event, fields) => {
+        logger.event(event, fields);
+        if (event === LogEvents.GmailMessageDropped) dropped += 1;
+      },
     });
     const events = await new GmailSkill({ source }).ingest(runtime);
-    return { mode: "live", ok: true, ingested: events.length };
+    // Empty inbox (nothing listed, nothing dropped) and partial success are both
+    // healthy; only a total hydration failure (listed > 0, ingested 0) is not.
+    const ok = events.length > 0 || dropped === 0;
+    return { mode: "live", ok, ingested: events.length, dropped };
   } catch (error) {
     // A genuine auth failure flips the credential to reconnect_required; other
     // failures (timeout, 5xx, network) leave it connected for the next attempt.

@@ -111,13 +111,19 @@ and deletes the local credential.
 - **Fixtures are the default and live never falls back to them.** If live mode is
   misconfigured, the status card shows the issues and no mail is ingested — Orion
   will not silently show fixtures.
-- **Read-time sync.** Mail is fetched when Mission Control renders (one page,
-  `in:inbox newer_than:7d`, up to 25 messages, with a request timeout).
-  Pagination, retries, and rate-limit handling are a later slice.
+- **Read-time sync.** Mail is fetched when Mission Control renders
+  (`in:inbox newer_than:7d`, up to 100 messages). The list is paginated and
+  messages are hydrated with bounded concurrency. Transient failures
+  (`429` / `5xx` / rate-limit `403` / network / timeout) are retried with
+  jittered backoff that honors `Retry-After`. A message still failing after its
+  retries is dropped best-effort so one bad message never blanks the dashboard.
+  The whole sync is bounded by an overall time budget (default 30s) whose
+  deadline aborts in-flight requests, so a Gmail outage can never hang a render.
 - **Reconnect vs retry.** A revoked/expired authorization (or an unrecoverable
   `401`) becomes a durable **Reconnect Gmail** prompt. Transient failures
   (timeouts, `5xx`, `403`, network) just mark the last sync unhealthy and retry
-  on the next render.
+  on the next render. A sync that lists messages but hydrates none is unhealthy;
+  partial success (some messages dropped, some ingested) stays healthy.
 
 ## Files that never get committed
 

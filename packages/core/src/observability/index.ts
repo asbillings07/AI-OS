@@ -41,6 +41,11 @@ export const LogEvents = {
   UserActionRecorded: "user.action.recorded",
   AiInvoked: "ai.invoked",
   GmailCredentialPersistFailed: "gmail.credential.persist_failed",
+  // Live Gmail resilience. Retry traces a transient failure that will be retried;
+  // Dropped traces a message abandoned after best-effort hydration. Neither ever
+  // carries tokens, response bodies, snippets, or message content.
+  GmailRequestRetried: "gmail.request.retried",
+  GmailMessageDropped: "gmail.message.dropped",
 } as const;
 
 /** A logger that does nothing. The default everywhere, so logging is opt-in. */
