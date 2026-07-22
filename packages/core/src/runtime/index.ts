@@ -53,29 +53,50 @@ export class OrionRuntime {
   }
 
   /**
-   * Persist a new fact, then deliver it live. The contract:
+   * Persist a new fact, then deliver it live. A thin wrapper over
+   * `recordExclusive` (its `build` unconditionally yields the given event), kept
+   * for the common case where the caller has already decided to record. The
+   * contract below is really `recordExclusive`'s; see it for details.
+   */
+  async record(event: EventEnvelope): Promise<void> {
+    await this.recordExclusive(() => event);
+  }
+
+  /**
+   * An **in-process serialized conditional append** (not a database
+   * transaction): run `build` inside the record critical section, and append +
+   * publish only if it yields an event. The contract:
    *
+   *  - **Atomic check-and-record.** `build` runs *after* every prior record has
+   *    finished processing, so it can re-check current state (e.g. "is this Work
+   *    Item still visible at this revision?") and abort by returning `null`. The
+   *    check and the append are one critical section, closing the
+   *    time-of-check/time-of-use gap a separate check-then-`record` leaves open.
+   *    `build` must be **synchronous and side-effect-free** — it only decides.
+   *    Note the projections `build` reads are current only for prior records that
+   *    *published successfully*; a prior publish failure (below) advances the
+   *    queue but may leave projections partially applied until `rebuild()`.
    *  - **Delivery idempotency.** Appending is idempotent by event id, and a
    *    duplicate is *not* re-delivered — storage idempotency alone would still
    *    let projections double-apply, so we publish only when the append newly
-   *    inserted the event.
+   *    inserted the event. Returns whether a new event was appended.
    *  - **Durable-append, then publish.** The log is the source of truth, so the
    *    event is committed before delivery. If a subscriber throws, `publish`
-   *    rejects and `record` rejects *after* the event is already durable, and
+   *    rejects and this call rejects *after* the event is already durable, and
    *    projections may be left partially applied. The event stays on the log;
    *    a later `rebuild()` reconstructs consistent state from it. Consumers must
    *    therefore be idempotent (ADR-0008).
    *  - **Serialized delivery.** The runtime is a shared singleton (e.g. across
    *    Next.js server actions), so records are queued and processed one at a
-   *    time. Concurrent callers can never interleave append/publish, which keeps
-   *    the single-writer ordering ADR-0008 promises even if a subscriber awaits.
-   *    A failed record must not stall the queue, so the chain continues
-   *    regardless of any individual call's outcome.
+   *    time. Concurrent callers can never interleave build/append/publish, which
+   *    keeps the single-writer ordering ADR-0008 promises even if a subscriber
+   *    awaits. A failed build or record must not stall the queue, so the chain
+   *    continues regardless of any individual call's outcome.
    */
-  async record(event: EventEnvelope): Promise<void> {
+  async recordExclusive(build: () => EventEnvelope | null): Promise<boolean> {
     const result = this.#recordQueue.then(
-      () => this.#appendAndPublish(event),
-      () => this.#appendAndPublish(event),
+      () => this.#buildAppendPublish(build),
+      () => this.#buildAppendPublish(build),
     );
     this.#recordQueue = result.then(
       () => undefined,
@@ -84,7 +105,13 @@ export class OrionRuntime {
     return result;
   }
 
-  async #appendAndPublish(event: EventEnvelope): Promise<void> {
+  async #buildAppendPublish(build: () => EventEnvelope | null): Promise<boolean> {
+    const event = build();
+    if (!event) return false;
+    return this.#appendAndPublish(event);
+  }
+
+  async #appendAndPublish(event: EventEnvelope): Promise<boolean> {
     const isNew = this.#store.append(event);
     if (isNew) {
       this.#logger.event(LogEvents.EventRecorded, {
@@ -96,6 +123,7 @@ export class OrionRuntime {
     } else {
       this.#logger.event(LogEvents.EventDuplicate, { id: event.id, type: event.type });
     }
+    return isNew;
   }
 
   /** Rebuild every projection from the log alone. */

@@ -127,6 +127,63 @@ describe("event backbone (ADR-0002, ADR-0008, ADR-0009)", () => {
     expect(store.count()).toBe(4);
   });
 
+  it("recordExclusive runs the builder inside the serialized section (atomic check-and-record)", async () => {
+    const { runtime, store } = newRuntime();
+    // The builder yields an event only while the log is empty. Under serialized
+    // execution the second builder runs AFTER the first append, sees count 1, and
+    // aborts — proving the check and the append are one critical section.
+    const build = () =>
+      store.count() === 0
+        ? makeEvent({ type: "X", source: "user", payload: {}, id: "only" })
+        : null;
+
+    const [a, b] = await Promise.all([
+      runtime.recordExclusive(build),
+      runtime.recordExclusive(build),
+    ]);
+
+    expect([a, b].filter(Boolean)).toHaveLength(1);
+    expect(store.count()).toBe(1);
+  });
+
+  it("recordExclusive with a null builder records nothing and returns false", async () => {
+    const { runtime, store } = newRuntime();
+    const recorded = await runtime.recordExclusive(() => null);
+    expect(recorded).toBe(false);
+    expect(store.count()).toBe(0);
+  });
+
+  it("a throwing builder rejects but does not stall the queue", async () => {
+    const { runtime, store } = newRuntime();
+    await expect(
+      runtime.recordExclusive(() => {
+        throw new Error("build boom");
+      }),
+    ).rejects.toThrow("build boom");
+
+    // The next record still processes — the queue tail advanced past the failure.
+    await runtime.record(makeEvent({ type: "X", source: "user", payload: {}, id: "after" }));
+    expect(store.count()).toBe(1);
+  });
+
+  it("a rejected publish does not stall the queue", async () => {
+    const bus = new InProcessEventBus();
+    let failing = true;
+    bus.subscribe(() => {
+      if (failing) throw new Error("publish boom");
+    });
+    const store = new SqliteEventStore(":memory:");
+    const runtime = new OrionRuntime({ bus, store });
+
+    await expect(
+      runtime.record(makeEvent({ type: "X", source: "user", payload: {}, id: "e1" })),
+    ).rejects.toThrow("publish boom");
+
+    failing = false;
+    await runtime.record(makeEvent({ type: "X", source: "user", payload: {}, id: "e2" }));
+    expect(store.count()).toBe(2);
+  });
+
   it("keeps the event durable when delivery fails, and rebuild() repairs the projection", async () => {
     // A subscriber that fails is registered BEFORE the projection, so on the
     // failing delivery the projection is never reached and is left stale.
