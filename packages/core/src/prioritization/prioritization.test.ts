@@ -1,13 +1,21 @@
 import { describe, it, expect } from "vitest";
 import { makeEvent } from "../events/index.js";
-import { EventTypes, type MessageReceivedPayload } from "../domain/index.js";
+import {
+  EventTypes,
+  originatorKey,
+  type MessageReceivedPayload,
+  type OriginatorRef,
+  type ReviewRequestedPayload,
+} from "../domain/index.js";
 import { contextProjection, type ContextState } from "../understanding/context.js";
 import { detectOpportunities } from "../opportunity/index.js";
 import { estimateCapacity } from "../capacity/index.js";
 import { attentionProjection } from "../attention/index.js";
+import { personalImportanceProjection, NEUTRAL_IMPORTANCE, type PersonalImportanceState } from "../importance/index.js";
 import { buildWorkItems, prioritize, compareWorkItems, workItemId, type WorkItem } from "./index.js";
 
 const NO_ATTENTION = attentionProjection.init();
+const NO_IMPORTANCE = personalImportanceProjection.init();
 
 /** Build Work Items with no user disposition (the common case in these tests). */
 function items(context: ContextState, now: string) {
@@ -144,11 +152,13 @@ describe("cross-source ranking is source-neutral (#46)", () => {
       capacity: 0.5,
       commitment: 0.5,
       urgency: 0.5,
+      importance: 0.5,
       reason: "",
       evidence: [],
       createdFromEventIds: [],
       attentionBasisEventIds: [],
       attentionRevision: "rev",
+      importanceEvidenceEventIds: [],
       ...overrides,
     } as WorkItem;
   }
@@ -193,6 +203,158 @@ describe("cross-source ranking is source-neutral (#46)", () => {
     const high = itemFixture({ id: "hi", subject: { kind: "review", id: "hi" }, priority: 0.9 });
     const low = itemFixture({ id: "lo", subject: { kind: "thread", id: "lo" }, priority: 0.2 });
     expect([low, high].slice().sort(compareWorkItems).map((i) => i.id)).toEqual(["hi", "lo"]);
+  });
+});
+
+describe("Personal Importance integration (#65)", () => {
+  /** A #46-shaped action Event stamped with an OriginatorRef (see work-item-actions). */
+  function actedOn(id: string, subject: { kind: string; id: string }, originator: OriginatorRef): ReturnType<typeof makeEvent> {
+    return makeEvent({
+      type: EventTypes.WorkItemActedOn,
+      source: "user",
+      id,
+      payload: { workItemId: `wi-${subject.kind}:${subject.id}`, subject, basisEventIds: ["basis"], originator },
+    });
+  }
+
+  function dismissed(id: string, subject: { kind: string; id: string }, originator: OriginatorRef): ReturnType<typeof makeEvent> {
+    return makeEvent({
+      type: EventTypes.WorkItemDismissed,
+      source: "user",
+      id,
+      payload: { workItemId: `wi-${subject.kind}:${subject.id}`, subject, basisEventIds: ["basis"], originator },
+    });
+  }
+
+  function foldImportance(events: ReturnType<typeof makeEvent>[]): PersonalImportanceState {
+    return events.reduce((state, event) => personalImportanceProjection.apply(state, event), NO_IMPORTANCE);
+  }
+
+  const DANA: OriginatorRef = { namespace: "gmail-skill", id: "dana@acme.com" };
+
+  function reviewRequested(
+    id: string,
+    changeId: string,
+    requestedBy: string,
+    requestedAt = "2026-07-15T12:00:00.000Z",
+  ) {
+    const payload: ReviewRequestedPayload = {
+      reviewRequestId: id,
+      changeId,
+      title: "Add retry to the event store",
+      requestedBy: { externalId: requestedBy },
+      location: changeId,
+      url: "https://example.com/pull/1",
+      requestedAt,
+    };
+    return makeEvent({ type: EventTypes.ReviewRequested, source: "github-skill", id, payload, occurredAt: requestedAt });
+  }
+
+  it("stays identical to today's ranking when the originator has no learned history", () => {
+    const context = contextOf([message({ threadId: "t1", messageId: "m1" })]);
+    const withoutOption = items(context, NOON);
+    const withEmptyImportance = buildWorkItems({ context, attention: NO_ATTENTION, importance: NO_IMPORTANCE, now: NOON });
+    expect(withEmptyImportance[0]?.priority).toBe(withoutOption[0]?.priority);
+    expect(withEmptyImportance[0]?.importance).toBe(NEUTRAL_IMPORTANCE);
+  });
+
+  it("raises priority for a thread whose sender the user consistently acts on", () => {
+    const context = contextOf([message({ threadId: "t1", messageId: "m1" })]);
+    const neutral = buildWorkItems({ context, attention: NO_ATTENTION, importance: NO_IMPORTANCE, now: NOON })[0]!;
+
+    const importance = foldImportance([
+      actedOn("act-1", { kind: "thread", id: "t1" }, DANA),
+      actedOn("act-2", { kind: "thread", id: "t1" }, DANA),
+    ]);
+    const boosted = buildWorkItems({ context, attention: NO_ATTENTION, importance, now: NOON })[0]!;
+
+    expect(boosted.importance).toBeCloseTo(0.75, 10);
+    // The v1 weight (#65, ADR-0014): IMPORTANCE_WEIGHT(0.15) * (0.75-0.5) * 2.
+    expect(boosted.priority - neutral.priority).toBeCloseTo(0.075, 10);
+  });
+
+  it("lowers priority for a thread whose sender the user consistently dismisses", () => {
+    const context = contextOf([message({ threadId: "t1", messageId: "m1" })]);
+    const neutral = buildWorkItems({ context, attention: NO_ATTENTION, importance: NO_IMPORTANCE, now: NOON })[0]!;
+
+    const importance = foldImportance([
+      dismissed("act-1", { kind: "thread", id: "t1" }, DANA),
+      dismissed("act-2", { kind: "thread", id: "t1" }, DANA),
+    ]);
+    const lowered = buildWorkItems({ context, attention: NO_ATTENTION, importance, now: NOON })[0]!;
+
+    expect(lowered.importance).toBeCloseTo(0.25, 10);
+    expect(neutral.priority - lowered.priority).toBeCloseTo(0.075, 10);
+  });
+
+  it("adds an evidence-specific explanation and exposes importance provenance separately from the attention basis", () => {
+    const context = contextOf([message({ threadId: "t1", messageId: "m1" })]);
+    const importance = foldImportance([
+      actedOn("act-1", { kind: "thread", id: "t1" }, DANA),
+      actedOn("act-2", { kind: "thread", id: "t1" }, DANA),
+    ]);
+    const [item] = buildWorkItems({ context, attention: NO_ATTENTION, importance, now: NOON });
+
+    expect(item?.reason).toContain("You've acted on more work from Dana Lee than you've dismissed.");
+    expect(item?.importanceEvidenceEventIds).toEqual(["act-1", "act-2"]);
+    // Importance provenance is distinct from the presentation revision.
+    expect(item?.importanceEvidenceEventIds).not.toEqual(item?.attentionBasisEventIds);
+  });
+
+  it("omits the importance sentence and evidence when the score is neutral", () => {
+    const context = contextOf([message({ threadId: "t1", messageId: "m1" })]);
+    const [item] = items(context, NOON);
+    expect(item?.reason).not.toContain("dismissed");
+    expect(item?.importanceEvidenceEventIds).toEqual([]);
+  });
+
+  it("breaks a priority tie by importance before falling through to subjectKey", () => {
+    const highImportance: WorkItem = {
+      id: "wi-thread:a",
+      subject: { kind: "thread", id: "a" },
+      kind: "ReplyNeeded",
+      title: "a",
+      band: "can_wait",
+      priority: 0.5,
+      opportunity: 0.5,
+      capacity: 0.5,
+      commitment: 0.5,
+      urgency: 0.5,
+      importance: 0.75,
+      reason: "",
+      evidence: [],
+      createdFromEventIds: [],
+      attentionBasisEventIds: [],
+      attentionRevision: "rev",
+      importanceEvidenceEventIds: [],
+    };
+    const lowImportance: WorkItem = { ...highImportance, id: "wi-thread:z", subject: { kind: "thread", id: "z" }, importance: 0.25 };
+    // "z" > "a" ordinally, so subjectKey alone would put z first; importance must win.
+    expect([lowImportance, highImportance].slice().sort(compareWorkItems).map((i) => i.id)).toEqual([
+      "wi-thread:a",
+      "wi-thread:z",
+    ]);
+  });
+
+  it("is source-neutral: a Gmail thread and a GitHub review with identical dispositions get the same contribution", () => {
+    const github: OriginatorRef = { namespace: "github-skill", id: "octo" };
+    const events = [message({ threadId: "t1", messageId: "m1" }), reviewRequested("r1", "acme/orion#1", "octo")];
+    const context = events.reduce((state, event) => contextProjection.apply(state, event), contextProjection.init());
+
+    const importance = foldImportance([
+      actedOn("act-1", { kind: "thread", id: "t1" }, DANA),
+      actedOn("act-2", { kind: "thread", id: "t1" }, DANA),
+      actedOn("act-3", { kind: "review", id: "acme/orion#1" }, github),
+      actedOn("act-4", { kind: "review", id: "acme/orion#1" }, github),
+    ]);
+
+    const ranked = buildWorkItems({ context, attention: NO_ATTENTION, importance, now: NOON });
+    const thread = ranked.find((i) => i.subject.kind === "thread")!;
+    const review = ranked.find((i) => i.subject.kind === "review")!;
+
+    expect(thread.importance).toBeCloseTo(0.75, 10);
+    expect(review.importance).toBeCloseTo(0.75, 10);
+    expect(originatorKey(DANA)).not.toBe(originatorKey(github));
   });
 });
 

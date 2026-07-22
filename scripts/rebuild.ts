@@ -48,6 +48,7 @@ async function main(): Promise<void> {
     const items = buildWorkItems({
       context: context.state,
       attention: attention.state,
+      importance: importance.state,
       now: new Date().toISOString(),
       logger,
     });

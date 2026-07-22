@@ -13,9 +13,9 @@ Its objective function is fixed: it exists to allocate the user's **Attention** 
 
 ---
 
-## Four reasoning inputs, not one formula
+## Five reasoning inputs, not one formula
 
-Prioritization weighs four **independent** dimensions. They are deliberately kept separate because they answer genuinely different questions, and collapsing them hides reasoning the user needs to trust:
+Prioritization weighs four **independent, intrinsic** dimensions plus one **learned** one. They are deliberately kept separate because they answer genuinely different questions, and collapsing them hides reasoning the user needs to trust:
 
 | Dimension | Question | Source |
 | --- | --- | --- |
@@ -23,18 +23,24 @@ Prioritization weighs four **independent** dimensions. They are deliberately kep
 | **Capacity** | Can the user act well right now? | [Capacity](./capacity.md) (#10) |
 | **Commitment** | Has the user committed to this? | Goals, promises, intent, [User Preferences](../domain/ubiquitous-language.md) |
 | **Urgency** | How time-sensitive is it? | Deadlines, expiry, calendar pressure |
+| **Personal Importance** | Does the user tend to act on work from whoever this is from? | Learned from recorded [Attention Dispositions](../domain/ubiquitous-language.md) ([ADR-0014](../adr/0014-personal-importance-from-dispositions.md), #65) |
 
 **Commitment and Urgency are not the same thing.** A promise you made to a colleague is a strong commitment with no deadline; a flash sale is highly urgent with no commitment. Treating them as one variable would let genuine urgency masquerade as importance, or let quiet commitments get buried. They may *eventually* be combined in an implementation, but the model keeps them distinct so the reasoning stays legible.
+
+**Personal Importance is different in kind from the other four.** Opportunity, Capacity, Commitment, and Urgency are all derived from the current moment's facts. Personal Importance is *learned* — a bounded behavioral signal folded from the user's own past decisions (acted on vs. dismissed), keyed to a source-neutral originator, never an authoritative belief about the person and never a substitute for an explicit [User Preference](../domain/ubiquitous-language.md). It stays neutral (contributes nothing) until there is enough decisive history to move it, so a Subject Orion has never seen anyone act on ranks exactly as it would today.
 
 > **This is not arithmetic.** `priority = opportunity × capacity × commitment × urgency` is explicitly *not* the model. These are reasoning inputs, and how they are weighed and resolved is left open for implementation and learning. Presenting prioritization as a fixed product would overclaim precision Orion does not have.
 
 > **v0.1 note — the Commitment input is currently a blend.** In code the Commitment factor takes the stronger of an explicit obligation (a `Commitment` Signal, e.g. an assignment or a review requested from you) and a relationship-derived expectation (a `FromKnownPerson` Signal). These are not conceptually identical — one is a duty, the other is social weight — so the computation names the combined value honestly (`responsibilityStrength`) rather than pretending they are the same. They may split into separate dimensions later.
 
+> **v0.1 note — Personal Importance is a bounded adjustment, not a fifth vote of equal weight.** It moves `priority` by at most a small, symmetric amount around neutral (see [ADR-0014](../adr/0014-personal-importance-from-dispositions.md) for the exact v1 curve and weight), and it is a tie-break *after* Urgency, Commitment, and Opportunity — never the deciding factor when the intrinsic reasoning already disagrees.
+
 ```
-  Opportunity  ┐
-  Capacity     ├──▶  Prioritization  ──▶  ranked Work Items  ──▶  Mission Control
-  Commitment   │      (weigh · resolve · explain)
-  Urgency      ┘
+  Opportunity          ┐
+  Capacity             │
+  Commitment           ├──▶  Prioritization  ──▶  ranked Work Items  ──▶  Mission Control
+  Urgency              │      (weigh · resolve · explain)
+  Personal Importance  ┘
 ```
 
 ---
@@ -86,7 +92,8 @@ Contrast the passport from [Opportunity Detection](./opportunity-detection.md): 
 ## Boundaries and future
 
 - The engine consumes understanding through the [Context Query API](./context-query-api.md) and feeds ranked Work Items to Mission Control and future Skills/Agents (advisory only — [ADR-0004](../adr/0004-ai-recommends-rules-decide.md)).
-- Future evolution (adaptive learning, user feedback loops, personalized weighting) must not change the public contract: *ranked, explainable Work Items in, attention protected*. How things are weighed can learn; *that* rankings are explainable cannot.
+- Personal Importance ([ADR-0014](../adr/0014-personal-importance-from-dispositions.md), #65) is the first adaptive-weighting input to land; it is a narrow behavioral signal, not the general "learned preferences" the product vision describes — that remains open for future evolution.
+- Future evolution (richer feedback loops, additional learned dimensions) must not change the public contract: *ranked, explainable Work Items in, attention protected*. How things are weighed can learn; *that* rankings are explainable cannot.
 
 ---
 

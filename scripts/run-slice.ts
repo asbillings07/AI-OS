@@ -19,6 +19,7 @@ import {
   type AttentionState,
   type ContextState,
   type Logger,
+  type PersonalImportanceState,
   type WorkItem,
 } from "@orion/core";
 import { GmailSkill } from "@orion/gmail-skill";
@@ -33,12 +34,17 @@ function printItem(item: WorkItem): void {
   console.log(`  • ${item.title}  [priority ${item.priority.toFixed(2)}]`);
   console.log(`    why: ${item.reason}`);
   console.log(
-    `    o=${item.opportunity.toFixed(2)} u=${item.urgency.toFixed(2)} c=${item.commitment.toFixed(2)} cap=${item.capacity.toFixed(2)} · traces to ${item.createdFromEventIds.length} event(s)`,
+    `    o=${item.opportunity.toFixed(2)} u=${item.urgency.toFixed(2)} c=${item.commitment.toFixed(2)} cap=${item.capacity.toFixed(2)} imp=${item.importance.toFixed(2)} · traces to ${item.createdFromEventIds.length} event(s)`,
   );
 }
 
-function render(context: ContextState, attention: AttentionState, label: string): WorkItem[] {
-  const items = buildWorkItems({ context, attention, now: NOW, logger });
+function render(
+  context: ContextState,
+  attention: AttentionState,
+  importance: PersonalImportanceState,
+  label: string,
+): WorkItem[] {
+  const items = buildWorkItems({ context, attention, importance, now: NOW, logger });
   const needs = items.filter((i) => i.band === "needs_attention");
   const wait = items.filter((i) => i.band === "can_wait");
   console.log(`\n=== ${label} ===`);
@@ -74,7 +80,7 @@ async function main(): Promise<void> {
       `Ingested ${gmail.length} Gmail + ${github.length} GitHub -> ${store.count()} events on the log.`,
     );
 
-    const before = render(context.state, attention.state, "Mission Control");
+    const before = render(context.state, attention.state, importance.state, "Mission Control");
 
     // Close the loop: the user handles the top item — an email or a GitHub item,
     // whichever ranks first. The action is scoped to the item's attention basis.
@@ -88,6 +94,7 @@ async function main(): Promise<void> {
         buildActionEvent({
           context: context.state,
           attention: attention.state,
+          importance: importance.state,
           now: NOW,
           workItemId: top.id,
           action: "acted",
@@ -105,7 +112,7 @@ async function main(): Promise<void> {
           workItemId: top.id,
           subject: `${top.subject.kind}:${top.subject.id}`,
         });
-        render(context.state, attention.state, "Mission Control (after your action)");
+        render(context.state, attention.state, importance.state, "Mission Control (after your action)");
       } else {
         console.log("\n(Nothing recorded — the item's revision changed before the action landed.)");
       }
