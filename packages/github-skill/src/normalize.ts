@@ -23,13 +23,20 @@ function eventId(raw: RawGitHubActivity): string {
 }
 
 /**
- * Compare two source-scoped logins. External identity matching must not hinge on
- * incidental casing/whitespace between configured and retrieved data, so we
- * normalize before comparing. (This is still same-namespace matching only — not
+ * Canonicalize a source-scoped GitHub login into a stable `externalId`. GitHub
+ * logins are case-insensitive, so incidental casing/whitespace must not fork one
+ * person into two originators when Personal Importance keys on this id (#65).
+ * Canonicalizing at the adapter keeps core's `OriginatorRef.id` opaque — core
+ * never rewrites an id it did not mint. (Still same-namespace only — not
  * cross-source person resolution.)
  */
+function canonicalLogin(login: string): string {
+  return login.trim().toLowerCase();
+}
+
+/** Compare two source-scoped logins by their canonical form. */
 function sameLogin(left: string, right: string): boolean {
-  return left.trim().toLowerCase() === right.trim().toLowerCase();
+  return canonicalLogin(left) === canonicalLogin(right);
 }
 
 /**
@@ -52,7 +59,7 @@ export function normalizeActivity(
         reviewRequestId: raw.activityId,
         changeId: `${raw.repo}#${raw.pullNumber}`,
         title: raw.title,
-        requestedBy: { externalId: raw.requestedBy.login, displayName: raw.requestedBy.name },
+        requestedBy: { externalId: canonicalLogin(raw.requestedBy.login), displayName: raw.requestedBy.name },
         location: `${raw.repo}#${raw.pullNumber}`,
         url: raw.url,
         requestedAt: raw.occurredAt,
@@ -65,7 +72,7 @@ export function normalizeActivity(
         assignmentId: raw.activityId,
         itemId: `${raw.repo}#${raw.issueNumber}`,
         title: raw.title,
-        assignedBy: { externalId: raw.assignedBy.login, displayName: raw.assignedBy.name },
+        assignedBy: { externalId: canonicalLogin(raw.assignedBy.login), displayName: raw.assignedBy.name },
         location: `${raw.repo}#${raw.issueNumber}`,
         url: raw.url,
         assignedAt: raw.occurredAt,

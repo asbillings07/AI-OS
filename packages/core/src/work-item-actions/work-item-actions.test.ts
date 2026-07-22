@@ -34,6 +34,25 @@ function reviewEvent(id: string, requestedAt: string): EventEnvelope {
   });
 }
 
+/** A review whose requester is unknown, so no originator can be resolved. */
+function reviewEventNoActor(id: string, requestedAt: string): EventEnvelope {
+  const payload: ReviewRequestedPayload = {
+    reviewRequestId: id,
+    changeId: REVIEW_CHANGE,
+    title: "Add retry to the event store",
+    location: REVIEW_CHANGE,
+    url: "https://github.com/acme/orion/pull/128",
+    requestedAt,
+  };
+  return makeEvent({
+    type: EventTypes.ReviewRequested,
+    source: "github-skill",
+    payload,
+    id,
+    occurredAt: requestedAt,
+  });
+}
+
 /** A live runtime with both projections, exactly as Mission Control boots it. */
 function harness() {
   const store = new SqliteEventStore(":memory:");
@@ -199,6 +218,31 @@ describe("work-item-actions: snooze lifecycle survives expiry (#61)", () => {
     const snoozes = h.store.readAll().filter((event) => event.type === EventTypes.WorkItemSnoozed);
     expect(snoozes).toHaveLength(2);
     expect(snoozes[0]?.id).not.toBe(snoozes[1]?.id);
+  });
+});
+
+describe("work-item-actions: stamps a source-neutral originator (#65)", () => {
+  it("stamps the winning source's actor onto the recorded action", async () => {
+    const h = harness();
+    await h.runtime.record(reviewEvent("r1", "2026-07-15T12:00:00.000Z"));
+    const item = reviewItem(h);
+    await submit(h, item.id, "acted", item.attentionRevision);
+
+    const recorded = userEvents(h)[0] as EventEnvelope;
+    expect((recorded.payload as { originator?: unknown }).originator).toEqual({
+      namespace: "github-skill",
+      id: "dana",
+    });
+  });
+
+  it("omits the originator when none is resolvable", async () => {
+    const h = harness();
+    await h.runtime.record(reviewEventNoActor("r1", "2026-07-15T12:00:00.000Z"));
+    const item = reviewItem(h);
+    await submit(h, item.id, "acted", item.attentionRevision);
+
+    const recorded = userEvents(h)[0] as EventEnvelope;
+    expect((recorded.payload as { originator?: unknown }).originator).toBeUndefined();
   });
 });
 

@@ -65,6 +65,38 @@ export interface ActorRef {
 }
 
 /**
+ * Who a piece of work is *from*, as an immutable, source-neutral evidence key.
+ *
+ * This is the identity Personal Importance is learned against (#65). It is a
+ * foundational domain type on purpose: it lives here so both action payloads and
+ * the Importance module can depend *downward* on it, never the other way around.
+ *
+ * `namespace` is the emitting Source's immutable label (e.g. `gmail-skill`,
+ * `github-skill`), carried verbatim from the winning Event's `source` — never
+ * inferred from a Subject kind (a thread is not always Gmail; an assignment is
+ * not always GitHub). `id` is a canonical source-native identifier the *adapter*
+ * is responsible for canonicalizing (Gmail lowercases addresses; GitHub emits a
+ * stable login); core treats it as opaque and never rewrites it.
+ *
+ * Like `ActorRef`, this deliberately does NOT assert cross-source equivalence:
+ * the same person in two namespaces stays two originators until identity
+ * resolution exists.
+ */
+export interface OriginatorRef {
+  readonly namespace: string;
+  readonly id: string;
+}
+
+/**
+ * The single canonical key for an originator. Uses a JSON-encoded tuple rather
+ * than `${namespace}:${id}` so it cannot collide when either component contains
+ * the separator (an email address or opaque id may contain `:`).
+ */
+export function originatorKey(originator: OriginatorRef): string {
+  return JSON.stringify([originator.namespace, originator.id]);
+}
+
+/**
  * A review was requested from the user on some change (e.g. a proposed code
  * change). Domain-centric: nothing here knows what a "pull request" is.
  *
@@ -146,6 +178,14 @@ export interface CurrentWorkItemActionPayload {
   readonly subject: SubjectRef;
   /** The occurrence Event ids the surfaced Work Item was based on (nonempty). */
   readonly basisEventIds: readonly string[];
+  /**
+   * Who the work was from at action time, stamped from Context so Personal
+   * Importance (#65) can learn against a uniform, immutable key without ever
+   * re-opening Context or branching on source. Optional and additive: events
+   * recorded before #65 (and any action with no resolvable originator, e.g. a
+   * failing check) carry none and stay neutral.
+   */
+  readonly originator?: OriginatorRef;
   readonly note?: string;
 }
 

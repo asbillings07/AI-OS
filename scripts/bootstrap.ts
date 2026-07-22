@@ -17,6 +17,7 @@ import {
   buildWorkItems,
   contextProjection,
   attentionProjection,
+  personalImportanceProjection,
   createLogger,
 } from "@orion/core";
 import { GmailSkill } from "@orion/gmail-skill";
@@ -32,11 +33,16 @@ async function main(): Promise<void> {
     const bus = new InProcessEventBus();
     const context = new ProjectionHost(contextProjection);
     const attention = new ProjectionHost(attentionProjection);
+    const importance = new ProjectionHost(personalImportanceProjection);
     const logger = createLogger();
     const runtime = new OrionRuntime({
       bus,
       store,
-      projections: [context as ProjectionHost<unknown>, attention as ProjectionHost<unknown>],
+      projections: [
+        context as ProjectionHost<unknown>,
+        attention as ProjectionHost<unknown>,
+        importance as ProjectionHost<unknown>,
+      ],
       logger,
     });
 

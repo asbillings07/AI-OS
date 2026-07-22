@@ -66,6 +66,15 @@ describe("GitHub normalization (Eng #8: the vendor shape stops here)", () => {
     expect(normalizeActivity(reviewFor("casey"), githubIdentity)).toBeNull();
   });
 
+  it("canonicalizes the requester login into a stable externalId (#65)", () => {
+    // GitHub logins are case-insensitive, so casing/whitespace must not fork one
+    // person into two Personal Importance originators. Canonicalizing at the
+    // adapter keeps core's OriginatorRef.id opaque.
+    const raw = { ...reviewFor("me"), requestedBy: { login: "  Dana-Lee ", name: "Dana Lee" } } as RawGitHubActivity;
+    const result = normalizeActivity(raw, githubIdentity)!;
+    expect((result.payload as { requestedBy?: { externalId: string } }).requestedBy?.externalId).toBe("dana-lee");
+  });
+
   it("emits AssignmentReceived with a domain-generic payload for the user's item", () => {
     const raw = githubActivity.find((a) => a.activityId === "gh-assign-204")!;
     const result = normalizeActivity(raw, githubIdentity)!;

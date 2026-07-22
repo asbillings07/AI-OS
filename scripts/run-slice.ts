@@ -11,10 +11,10 @@ import {
   ProjectionHost,
   contextProjection,
   attentionProjection,
+  personalImportanceProjection,
   buildWorkItems,
+  buildActionEvent,
   createLogger,
-  makeEvent,
-  EventTypes,
   LogEvents,
   type AttentionState,
   type ContextState,
@@ -55,10 +55,15 @@ async function main(): Promise<void> {
     const bus = new InProcessEventBus();
     const context = new ProjectionHost(contextProjection);
     const attention = new ProjectionHost(attentionProjection);
+    const importance = new ProjectionHost(personalImportanceProjection);
     const runtime = new OrionRuntime({
       bus,
       store,
-      projections: [context as ProjectionHost<unknown>, attention as ProjectionHost<unknown>],
+      projections: [
+        context as ProjectionHost<unknown>,
+        attention as ProjectionHost<unknown>,
+        importance as ProjectionHost<unknown>,
+      ],
       logger,
     });
 
@@ -76,19 +81,28 @@ async function main(): Promise<void> {
     const top = before.find((item) => item.band === "needs_attention");
     if (top) {
       console.log(`\n>> You handle "${top.title}". Recording the decision as a new Event...`);
-      await runtime.record(
-        makeEvent({
-          type: EventTypes.WorkItemActedOn,
-          source: "user",
-          payload: { workItemId: top.id, subject: top.subject, basisEventIds: top.attentionBasisEventIds },
+      // Record through the real trust boundary (buildActionEvent) rather than
+      // hand-building the Event, so the slice exercises the full path — including
+      // originator stamping for Personal Importance (#65) — end to end.
+      const recorded = await runtime.recordExclusive(() =>
+        buildActionEvent({
+          context: context.state,
+          attention: attention.state,
+          now: NOW,
+          workItemId: top.id,
+          action: "acted",
+          revision: top.attentionRevision,
+          logger,
         }),
       );
       // Trace the action only after it's durably recorded.
-      logger.event(LogEvents.UserActionRecorded, {
-        action: "acted",
-        workItemId: top.id,
-        subject: `${top.subject.kind}:${top.subject.id}`,
-      });
+      if (recorded) {
+        logger.event(LogEvents.UserActionRecorded, {
+          action: "acted",
+          workItemId: top.id,
+          subject: `${top.subject.kind}:${top.subject.id}`,
+        });
+      }
       render(context.state, attention.state, "Mission Control (after your action)");
     }
 
