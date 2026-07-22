@@ -16,6 +16,7 @@ import {
   importanceScore,
   originatorFor,
   personalImportanceProjection,
+  MAX_IMPORTANCE_EVIDENCE_IDS,
   NEUTRAL_IMPORTANCE,
   type PersonalImportanceState,
 } from "./index.js";
@@ -315,6 +316,54 @@ describe("personalImportanceProjection: folding (#65)", () => {
     ]);
     expect(importanceFor(state, gmail)).toBeCloseTo(0.75, 10);
     expect(importanceFor(state, github)).toBeCloseTo(0.25, 10);
+  });
+
+  it("keeps exact acted/dismissed counts but bounds evidenceEventIds to a recent window", async () => {
+    // 25 decisive actions, alternating direction so the exact count still tells a
+    // clean story: 13 acted, 12 dismissed.
+    const events = Array.from({ length: 25 }, (_, i) =>
+      action(i % 2 === 0 ? EventTypes.WorkItemActedOn : EventTypes.WorkItemDismissed, `act-${i + 1}`, DANA),
+    );
+
+    const state = foldImportance(events);
+    const entry = state.byOriginator[originatorKey(DANA)]!;
+
+    // The exact counts (what the score is computed from) are unbounded and correct.
+    expect(entry.acted).toBe(13);
+    expect(entry.dismissed).toBe(12);
+    expect(importanceFor(state, DANA)).toBeCloseTo(importanceScore({ acted: 13, dismissed: 12 }), 10);
+
+    // Only the most recent MAX_IMPORTANCE_EVIDENCE_IDS ids survive as provenance.
+    expect(entry.evidenceEventIds).toHaveLength(MAX_IMPORTANCE_EVIDENCE_IDS);
+    const expectedIds = events.slice(-MAX_IMPORTANCE_EVIDENCE_IDS).map((e) => e.id);
+    expect(entry.evidenceEventIds).toEqual(expectedIds);
+
+    // A rebuild through a real runtime produces the identical bounded window, not
+    // just a re-fold — proving the bound survives replay (ADR-0009).
+    const store = new SqliteEventStore(":memory:");
+    try {
+      const liveHost = new ProjectionHost(personalImportanceProjection);
+      const liveRuntime = new OrionRuntime({
+        bus: new InProcessEventBus(),
+        store,
+        projections: [liveHost as ProjectionHost<unknown>],
+      });
+      for (const event of events) await liveRuntime.record(event);
+      const live = structuredClone(liveHost.state);
+
+      const rebuiltHost = new ProjectionHost(personalImportanceProjection);
+      const rebuildRuntime = new OrionRuntime({
+        bus: new InProcessEventBus(),
+        store,
+        projections: [rebuiltHost as ProjectionHost<unknown>],
+      });
+      await rebuildRuntime.rebuild();
+
+      expect(rebuiltHost.state).toEqual(live);
+      expect(rebuiltHost.state.byOriginator[originatorKey(DANA)]!.evidenceEventIds).toEqual(expectedIds);
+    } finally {
+      store.close();
+    }
   });
 
   it("rebuilds an identical live state purely by replaying the log (ADR-0009)", async () => {

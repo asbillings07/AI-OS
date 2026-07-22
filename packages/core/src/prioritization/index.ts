@@ -279,10 +279,10 @@ export interface BuildWorkItemsOptions {
  * Attention projection decides which are *visible* (the sole suppression stage).
  * Capacity is estimated from the current attention demand (visible count), so
  * dismissed/snoozed work stops weighing on the user while hidden. For each
- * visible Opportunity, `importanceContributionFor` resolves the Context-derived
- * originator into a plain numeric contribution *before* handing off to
- * `prioritize()`, which is the one place Context is read for importance —
- * `prioritize()` itself never sees Context.
+ * visible Opportunity, `buildWorkItems` itself — the one place Context is read
+ * for importance — calls `importanceContributionFor` to resolve the Context-
+ * derived originator into a plain numeric contribution, then hands that plain
+ * data off to `prioritize()`, which itself never sees Context.
  *
  * The optional logger only observes; it never changes the result and defaults to a
  * no-op. Trace names are computation-oriented (`opportunity.evaluated`/

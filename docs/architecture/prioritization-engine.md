@@ -65,7 +65,7 @@ Prioritization operates on Opportunities derived purely from **reality** (Contex
 
 ## Urgency versus importance
 
-A recurring failure mode of productivity tools is equating *urgent* with *important*. The Prioritization Engine keeps them separate: Urgency is one input among four. A low-urgency, high-commitment goal (long-term, easy to neglect) must be able to out-rank a high-urgency, low-value interruption. This is precisely why the four inputs are modeled independently.
+A recurring failure mode of productivity tools is equating *urgent* with *important*. The Prioritization Engine keeps them separate: Urgency is one of the four intrinsic inputs. A low-urgency, high-commitment goal (long-term, easy to neglect) must be able to out-rank a high-urgency, low-value interruption. This is precisely why the four intrinsic inputs are modeled independently.
 
 ---
 
