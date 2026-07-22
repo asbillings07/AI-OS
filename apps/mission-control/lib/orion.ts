@@ -99,7 +99,7 @@ export interface MissionControlView {
  */
 export async function readMissionControl(): Promise<MissionControlView> {
   const { context, attention, ai, logger, runtime } = await getService();
-  const gmailSync = await syncConfiguredGmail(runtime);
+  const gmailSync = await syncConfiguredGmail(runtime, logger);
   const gmail = await getGmailIntegration().state();
   const now = new Date().toISOString();
   const items = buildWorkItems({ context: context.state, attention: attention.state, now, logger });

@@ -1,5 +1,11 @@
-import type { OrionRuntime } from "@orion/core";
-import { GmailSkill, LiveGmailSource, GmailAuthError } from "@orion/gmail-skill";
+import { LogEvents, type Logger, type OrionRuntime } from "@orion/core";
+import {
+  GmailSkill,
+  LiveGmailSource,
+  GmailAuthError,
+  type GmailSource,
+  type GmailTrace,
+} from "@orion/gmail-skill";
 import { ReconnectRequiredError } from "@orion/gmail-auth";
 import { getGmailIntegration } from "./gmail-auth";
 
@@ -13,6 +19,8 @@ export interface GmailSyncResult {
   readonly ok: boolean;
   /** Number of Gmail messages submitted this sync (idempotent on the log). */
   readonly ingested: number;
+  /** Messages listed but abandoned this sync after best-effort hydration. */
+  readonly dropped?: number;
   readonly skipped?: "disconnected" | "reconnect_required" | "misconfigured";
   readonly error?: string;
 }
@@ -26,17 +34,20 @@ let inFlight: Promise<GmailSyncResult> | null = null;
  * render without a restart. Deterministic Gmail event ids keep repeat ingestion
  * idempotent, so previously ingested messages remain available even if this
  * attempt times out or fails. A live failure NEVER falls back to fixtures.
+ *
+ * Takes the logger already created in `orion.ts` so live resilience traces (retry,
+ * drop) join the same structured stream — no second logger.
  */
-export function syncConfiguredGmail(runtime: OrionRuntime): Promise<GmailSyncResult> {
+export function syncConfiguredGmail(runtime: OrionRuntime, logger: Logger): Promise<GmailSyncResult> {
   if (!inFlight) {
-    inFlight = runSync(runtime).finally(() => {
+    inFlight = runSync(runtime, logger).finally(() => {
       inFlight = null;
     });
   }
   return inFlight;
 }
 
-async function runSync(runtime: OrionRuntime): Promise<GmailSyncResult> {
+async function runSync(runtime: OrionRuntime, logger: Logger): Promise<GmailSyncResult> {
   const integration = getGmailIntegration();
   const state = await integration.state();
 
@@ -56,13 +67,17 @@ async function runSync(runtime: OrionRuntime): Promise<GmailSyncResult> {
   }
 
   try {
-    const source = new LiveGmailSource({
-      tokenProvider: service,
-      query: "in:inbox newer_than:7d",
-      maxResults: 25,
-    });
-    const events = await new GmailSkill({ source }).ingest(runtime);
-    return { mode: "live", ok: true, ingested: events.length };
+    return await ingestLiveGmail(
+      runtime,
+      logger,
+      (onTrace) =>
+        new LiveGmailSource({
+          tokenProvider: service,
+          query: "in:inbox newer_than:7d",
+          maxMessages: 100,
+          onTrace,
+        }),
+    );
   } catch (error) {
     // A genuine auth failure flips the credential to reconnect_required; other
     // failures (timeout, 5xx, network) leave it connected for the next attempt.
@@ -75,6 +90,31 @@ async function runSync(runtime: OrionRuntime): Promise<GmailSyncResult> {
     }
     return { mode: "live", ok: false, ingested: 0, error: messageOf(error) };
   }
+}
+
+/**
+ * The live ingest core, extracted so the drop-counting and health rule are
+ * testable without the OAuth/SQLite integration singleton. `buildSource` receives
+ * the trace sink so drops are counted through the same path the source uses.
+ *
+ * Health: an empty inbox and partial success are both healthy; only a total
+ * hydration failure (messages were listed but none ingested) is `ok: false`.
+ */
+export async function ingestLiveGmail(
+  runtime: OrionRuntime,
+  logger: Logger,
+  buildSource: (onTrace: GmailTrace) => GmailSource,
+): Promise<GmailSyncResult> {
+  let dropped = 0;
+  const source = buildSource((event, fields) => {
+    // Count the drop BEFORE logging. The source swallows a throwing tracer, so
+    // counting first keeps all-drop health honest even if the logger throws.
+    if (event === LogEvents.GmailMessageDropped) dropped += 1;
+    logger.event(event, fields);
+  });
+  const events = await new GmailSkill({ source }).ingest(runtime);
+  const ok = events.length > 0 || dropped === 0;
+  return { mode: "live", ok, ingested: events.length, dropped };
 }
 
 function messageOf(error: unknown): string {
