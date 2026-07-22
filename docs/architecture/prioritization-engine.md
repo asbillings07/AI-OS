@@ -53,7 +53,7 @@ It is **not** responsible for: detecting opportunities, estimating capacity, dec
 
 ### Reality in, presentation out: the visibility stage
 
-Prioritization operates on Opportunities derived purely from **reality** (Context). Whether the user has already *handled, snoozed, or dismissed* a situation is a fact about **presentation**, not reality, and is modeled separately as the **Attention** projection ([ADR-0012](../adr/0012-attention-is-a-projection-distinct-from-context.md)). A single `isVisible(opportunity, attention, now)` function — the sole suppression authority — filters reality-derived Opportunities before ranking. Actions are scoped to the exact revision the user saw (`attentionBasisEventIds`), so a genuinely new occurrence resurfaces an item while a late-arriving older fact stays quiet.
+Prioritization operates on Opportunities derived purely from **reality** (Context). Whether the user has already *handled, snoozed, or dismissed* a situation is a fact about **presentation**, not reality, and is modeled separately as the **Attention** projection ([ADR-0012](../adr/0012-attention-is-a-projection-distinct-from-context.md)). A single `isVisible(opportunity, attention, now)` function — the sole suppression authority — filters reality-derived Opportunities before ranking. Actions are scoped to the exact revision the user saw (`attentionBasisEventIds`, defined by the newest occurrence by domain time for *every* Subject kind, conversations included), so a genuinely new occurrence resurfaces an item while a late-arriving older fact stays quiet. A rendered `attentionRevision` token lets the server reject an action taken against a stale card (optimistic concurrency) rather than suppress something the user never saw.
 
 ---
 

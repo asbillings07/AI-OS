@@ -207,19 +207,34 @@ describe("GitHub facts flow through the source-neutral decision layer (#46)", ()
     expect(items.some((item) => item.createdFromEventIds.some((id) => githubEventIds.has(id)))).toBe(true);
   });
 
-  it("adds GitHub Work Items alongside Gmail ones without disturbing the Gmail set", async () => {
+  it("adds GitHub Work Items alongside Gmail ones, preserving Gmail Context and intrinsics", async () => {
     const { runtime, context, attention } = newRuntime();
     await new GmailSkill().ingest(runtime);
     const gmailOnly = workItems(context.state as ContextState, attention.state);
+    const gmailContextBefore = structuredClone({
+      threads: (context.state as ContextState).threads,
+      people: (context.state as ContextState).people,
+    });
 
     const github = await new GitHubSkill().ingest(runtime);
     const githubIds = new Set(github.map((e) => e.id));
     const afterGithub = workItems(context.state as ContextState, attention.state);
 
-    // Every Gmail Work Item is still present and unchanged...
-    for (const gmailItem of gmailOnly) {
-      expect(afterGithub).toContainEqual(gmailItem);
+    // The same Gmail Subjects are still represented, with stable intrinsic
+    // Opportunity value and provenance. Their `band`/`capacity` are deliberately
+    // allowed to shift: #46 makes Capacity depend on total visible attention
+    // demand, so adding GitHub work is legitimate cross-source competition.
+    for (const before of gmailOnly) {
+      const after = afterGithub.find((item) => item.id === before.id);
+      expect(after, `Gmail Subject ${before.id} should still be represented`).toBeDefined();
+      expect(after!.opportunity).toBe(before.opportunity);
+      expect(after!.createdFromEventIds).toEqual(before.createdFromEventIds);
     }
+    // GitHub facts do not alter Gmail Context (reality stays source-isolated)...
+    expect({
+      threads: (context.state as ContextState).threads,
+      people: (context.state as ContextState).people,
+    }).toEqual(gmailContextBefore);
     // ...and GitHub added new, source-neutral Work Items that trace to its events.
     expect(afterGithub.length).toBeGreaterThan(gmailOnly.length);
     expect(

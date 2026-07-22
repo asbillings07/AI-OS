@@ -9,6 +9,7 @@ import {
   attentionProjection,
   buildWorkItems,
   createLogger,
+  latestThreadMessage,
   makeEvent,
   EventTypes,
   LogEvents,
@@ -56,8 +57,8 @@ async function boot(): Promise<OrionService> {
   // Rebuild understanding from the log (ADR-0009), then seed each fixture Skill
   // idempotently. Deterministic event ids dedupe on the append-only store, so
   // re-seeding on every boot is a no-op once present, and an existing Gmail-only
-  // log also picks up GitHub. GitHub facts land on the log but produce no Work
-  // Items yet — core has no GitHub interpretation until #45.
+  // log also picks up GitHub. Both Sources surface as source-neutral Work Items
+  // through the same decision layer (#46).
   await runtime.rebuild();
   await new GmailSkill().ingest(runtime);
   await new GitHubSkill().ingest(runtime);
@@ -104,11 +105,13 @@ export async function readMissionControl(): Promise<MissionControlView> {
       // distinction (this Subject is a conversation), not a vendor branch.
       if (item.subject.kind !== "thread") return item;
       const thread = context.state.threads[item.subject.id];
-      const lastMessage = thread?.messages[thread.messages.length - 1];
-      if (!lastMessage) return item;
+      // Summarize the CURRENT revision (newest occurrence), not the last appended
+      // message — matching the attention basis the user is shown.
+      const currentMessage = thread ? latestThreadMessage(thread) : undefined;
+      if (!currentMessage) return item;
       try {
         const { summary, confidence } = await ai.summarize({
-          text: lastMessage.body,
+          text: currentMessage.body,
           purpose: "conversation triage",
           maxSentences: 1,
         });
@@ -135,17 +138,27 @@ export type WorkItemAction = (typeof WORK_ITEM_ACTIONS)[number];
  * updates the Attention projection, which changes what's visible on the next read
  * (ADR-0002, ADR-0007, ADR-0008, ADR-0009, ADR-0012 all at once).
  *
- * The trust boundary is here: the client submits only `workItemId` + `action`. We
- * re-resolve it against what is *currently visible*, and derive the Subject and the
- * attention basis from that surfaced Work Item — never from client input. We verify
- * the item is visible, its Subject is valid, and its basis is nonempty before
- * writing anything. A forged or stale id records nothing (never pollute the
- * immutable log) and returns false. Duplicate submissions are benign: once acted/
- * snoozed/dismissed the item is no longer visible, so a repeat resolves to nothing.
+ * The trust boundary is here. The client submits `workItemId` + `action` +
+ * `revision`. We re-resolve the item against what is *currently visible* and derive
+ * the Subject and attention basis from that surfaced Work Item — never from client
+ * input. The `revision` is an optimistic-concurrency token, NOT trusted data: we
+ * recompute the current item's token and record only if it matches, so an action
+ * the user took against a card cannot silently apply to a newer revision that
+ * arrived in between (a TOCTOU race that would suppress information they never saw).
+ *
+ * We also verify the item is visible, its Subject is valid, and its basis is
+ * nonempty before writing. A forged/stale id, or a stale revision, records nothing
+ * (never pollute the immutable log) and returns false; the caller then refreshes to
+ * current truth. Duplicate submissions are benign: once acted/snoozed/dismissed the
+ * item is no longer visible, so a repeat resolves to nothing.
  *
  * Returns whether an event was recorded.
  */
-export async function recordAction(workItemId: string, action: WorkItemAction): Promise<boolean> {
+export async function recordAction(
+  workItemId: string,
+  action: WorkItemAction,
+  revision: string,
+): Promise<boolean> {
   const { runtime, context, attention, logger } = await getService();
 
   const surfaced = buildWorkItems({
@@ -157,6 +170,13 @@ export async function recordAction(workItemId: string, action: WorkItemAction): 
 
   // Only act on a currently-visible item with a valid Subject and a nonempty basis.
   if (!surfaced || !surfaced.subject?.id || surfaced.attentionBasisEventIds.length === 0) {
+    return false;
+  }
+
+  // Optimistic concurrency: the card the user acted on must still be the current
+  // revision. A mismatch means a newer occurrence arrived; reject and let the view
+  // refresh rather than suppress something the user never saw.
+  if (surfaced.attentionRevision !== revision) {
     return false;
   }
 

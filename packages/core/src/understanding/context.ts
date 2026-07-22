@@ -35,10 +35,31 @@ export interface ThreadContext {
   messages: ObservedMessage[];
   firstReceivedAt: string;
   lastReceivedAt: string;
+  /**
+   * The Event whose occurrence currently supplies the thread's display/attention
+   * fields — the NEWEST inbound message by domain timestamp (Event-id tie-break),
+   * never simply the last array element. A delayed poll can append an *older*
+   * message; that grows `messages` for provenance but must not become the current
+   * revision. Mirrors the OccurrenceContext contract used by collaborative work.
+   */
+  latestMessageEventId: string;
   status: ThreadStatus;
   snoozedUntil?: string;
   /** The Event id of the most recent user action on this thread, if any. */
   lastActionEventId?: string;
+}
+
+/**
+ * The message that currently supplies a thread's display/attention fields: the
+ * occurrence winner named by `latestMessageEventId`, NOT the last array element.
+ * The single place "latest thread message" is defined, so Signals, Opportunities,
+ * and AI summarization never invent their own (append-order) notion of latest.
+ */
+export function latestThreadMessage(thread: ThreadContext): ObservedMessage | undefined {
+  return (
+    thread.messages.find((message) => message.eventId === thread.latestMessageEventId) ??
+    thread.messages[thread.messages.length - 1]
+  );
 }
 
 /** Orion's understanding of one Person — the basis of Relationship strength. */
@@ -237,13 +258,21 @@ function applyMessageReceived(state: ContextState, event: EventEnvelope): Contex
     participants.add(recipient.address);
   }
 
+  // The incoming message becomes the current revision only if its occurrence wins
+  // by domain time (Event-id tie-break) — so a backfilled older message is kept for
+  // provenance but does not change the display fields or the attention basis.
+  const incomingWins =
+    !existing ||
+    occurrenceWins(payload.receivedAt, event.id, existing.lastReceivedAt, existing.latestMessageEventId);
+
   const thread: ThreadContext = existing
     ? {
         ...existing,
         subject: existing.subject || payload.subject,
         participants: [...participants],
         messages: [...existing.messages, message],
-        lastReceivedAt: payload.receivedAt,
+        lastReceivedAt: incomingWins ? payload.receivedAt : existing.lastReceivedAt,
+        latestMessageEventId: incomingWins ? event.id : existing.latestMessageEventId,
         // A new inbound message reopens a handled or snoozed thread the user had
         // put down. Dismissed is a durable mute — the user said this isn't worth
         // their attention — so it stays silent even if the conversation continues.
@@ -258,6 +287,7 @@ function applyMessageReceived(state: ContextState, event: EventEnvelope): Contex
         messages: [message],
         firstReceivedAt: payload.receivedAt,
         lastReceivedAt: payload.receivedAt,
+        latestMessageEventId: event.id,
         status: "open",
       };
 

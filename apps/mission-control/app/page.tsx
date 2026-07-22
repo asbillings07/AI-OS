@@ -11,6 +11,21 @@ function greeting(now: Date): string {
   return "Good evening";
 }
 
+/**
+ * Only http(s) links are safe to render as navigable anchors. Source-provided
+ * URLs are otherwise untrusted (a future Skill could supply `javascript:` or
+ * `data:`), so anything else is shown as plain text rather than a link.
+ */
+function safeHref(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    const scheme = new URL(url).protocol;
+    return scheme === "https:" || scheme === "http:" ? url : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function ActionButtons({ item }: { item: WorkItem }) {
   return (
     <div className="actions">
@@ -18,6 +33,7 @@ function ActionButtons({ item }: { item: WorkItem }) {
         <form action={actOnWorkItem} key={action}>
           <input type="hidden" name="workItemId" value={item.id} />
           <input type="hidden" name="action" value={action} />
+          <input type="hidden" name="revision" value={item.attentionRevision} />
           <button type="submit" className={`action action--${action}`}>
             {action === "acted" ? "Handled" : action === "snoozed" ? "Later" : "Not now"}
           </button>
@@ -28,13 +44,14 @@ function ActionButtons({ item }: { item: WorkItem }) {
 }
 
 function Card({ item, muted }: { item: WorkItem; muted?: boolean }) {
+  const href = safeHref(item.url);
   return (
     <article className={`card${muted ? " card--muted" : ""}`}>
       <h3 className="card__title">{item.title}</h3>
       {item.location ? (
         <p className="card__location">
-          {item.url ? (
-            <a href={item.url} target="_blank" rel="noreferrer">
+          {href ? (
+            <a href={href} target="_blank" rel="noreferrer">
               {item.location}
             </a>
           ) : (

@@ -1,6 +1,6 @@
 import { isAutomatedSender } from "../domain/index.js";
-import type { ContextState, ThreadContext } from "./context.js";
-import type { SubjectRef } from "./subject.js";
+import { latestThreadMessage, type ContextState, type ThreadContext } from "./context.js";
+import type { SubjectRef } from "../subject/index.js";
 
 export type SignalKind =
   // Conversation (thread) signals.
@@ -61,7 +61,8 @@ export function detectSignals(context: ContextState, now: string): Signal[] {
   for (const thread of Object.values(context.threads)) {
     const subject: SubjectRef = { kind: "thread", id: thread.threadId };
     const eventIds = threadEventIds(thread);
-    const lastSender = thread.messages[thread.messages.length - 1]?.from.address ?? "";
+    // The "current" sender is the newest occurrence's, not the last appended one.
+    const lastSender = latestThreadMessage(thread)?.from.address ?? "";
     const automated = isAutomatedSender(lastSender);
 
     if (automated) {

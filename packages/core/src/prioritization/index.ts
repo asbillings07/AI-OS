@@ -5,27 +5,18 @@ import { detectWorkOpportunities } from "../understanding/work-opportunities.js"
 import { estimateCapacity, type Capacity } from "../capacity/index.js";
 import type { Signal } from "../understanding/signals.js";
 import { subjectKey, type SubjectRef } from "../subject/index.js";
-import { isVisible, type AttentionState } from "../attention/index.js";
+import { isVisible, attentionRevision, type AttentionState } from "../attention/index.js";
 import { LogEvents, nullLogger, type Logger } from "../observability/index.js";
 
 export type WorkItemBand = "needs_attention" | "can_wait";
 
 /**
- * A Work Item (ADR-0003): the canonical unit of "this matters," now source-neutral.
- * It is about a `subject` (a conversation, a review, an assignment, a check), not a
- * vendor. Its Explanation is *structured* — `reason` + `evidence` +
- * `createdFromEventIds` let Mission Control answer "Why is this here?" entirely from
- * deterministic reasoning (no AI). `summary` is the only AI-derived, advisory field.
+ * The ranking/explanation fields every Work Item carries, independent of its
+ * Subject kind. The presentation fields (kind/subject/title/location/url) are
+ * layered on per-Opportunity below so the discriminated relationship is preserved.
  */
-export interface WorkItem {
+interface WorkItemRanking {
   id: string;
-  subject: SubjectRef;
-  kind: Opportunity["kind"];
-  title: string;
-  /** Optional human-readable location for display, e.g. "acme/orion#128". */
-  location?: string;
-  /** Optional canonical link for display. */
-  url?: string;
   band: WorkItemBand;
   /** Final rank score, 0..1. */
   priority: number;
@@ -42,14 +33,50 @@ export interface WorkItem {
   createdFromEventIds: string[];
   /** The current presentation revision the user is being shown (for actions). */
   attentionBasisEventIds: string[];
+  /**
+   * Optimistic-concurrency token for {subject, attentionBasisEventIds}. Rendered
+   * into the action form so the server can reject an action taken against a stale
+   * revision (see attention/revision.ts).
+   */
+  attentionRevision: string;
   /** Advisory AI summary (optional; explanation never depends on it). */
   summary?: string;
   summaryConfidence?: number;
 }
 
-/** Canonical Work Item id. Thread ids keep their historical `wi-<threadId>` form. */
+/**
+ * A Work Item (ADR-0003): the canonical unit of "this matters," now source-neutral.
+ * It is about a `subject` (a conversation, a review, an assignment, a check), not a
+ * vendor. Its Explanation is *structured* — `reason` + `evidence` +
+ * `createdFromEventIds` let Mission Control answer "Why is this here?" entirely from
+ * deterministic reasoning (no AI). `summary` is the only AI-derived, advisory field.
+ *
+ * The type distributes over the Opportunity union so `kind` and `subject` stay
+ * paired exactly as in Opportunity — a `RiskDetected` item structurally must carry
+ * a check Subject, never a thread one.
+ */
+export type WorkItem = Opportunity extends infer O
+  ? O extends Opportunity
+    ? WorkItemRanking & Pick<O, "kind" | "subject" | "title" | "location" | "url">
+    : never
+  : never;
+
+/**
+ * Canonical, globally-unique Work Item id. Uses the full `subjectKey` (kind + id)
+ * for every Subject so ids can never collide across kinds even when an opaque
+ * external Subject id happens to resemble another kind's key. This id is a display/
+ * lookup handle only — it is NOT the suppression identity (that is the Subject and
+ * the attention basis; legacy Events reconstruct meaning from `threadId`).
+ */
 export function workItemId(subject: SubjectRef): string {
-  return subject.kind === "thread" ? `wi-${subject.id}` : `wi-${subjectKey(subject)}`;
+  return `wi-${subjectKey(subject)}`;
+}
+
+/** Deterministic, locale-independent string ordering (avoids localeCompare drift). */
+function compareOrdinal(left: string, right: string): number {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
 }
 
 function signalStrength(signals: readonly Signal[], kind: Signal["kind"]): number {
@@ -89,7 +116,9 @@ export function compareWorkItems(a: WorkItem, b: WorkItem): number {
     b.urgency - a.urgency ||
     b.commitment - a.commitment ||
     b.opportunity - a.opportunity ||
-    subjectKey(a.subject).localeCompare(subjectKey(b.subject))
+    // Ordinal, not localeCompare: ranking must be identical on every machine
+    // regardless of the host's default locale / ICU configuration.
+    compareOrdinal(subjectKey(a.subject), subjectKey(b.subject))
   );
 }
 
@@ -126,6 +155,9 @@ export function prioritize(opportunities: readonly Opportunity[], capacity: Capa
       Math.min(1, 0.45 * opportunity.value + 0.25 * urgency + 0.3 * responsibilityStrength),
     );
 
+    // The kind/subject pairing comes straight from one Opportunity, so it always
+    // satisfies exactly one member of the WorkItem union; the cast tells the
+    // compiler what it cannot correlate across the two fields on its own.
     return {
       id: workItemId(opportunity.subject),
       subject: opportunity.subject,
@@ -143,7 +175,8 @@ export function prioritize(opportunities: readonly Opportunity[], capacity: Capa
       evidence: [...opportunity.evidence],
       createdFromEventIds: [...opportunity.createdFromEventIds],
       attentionBasisEventIds: [...opportunity.attentionBasisEventIds],
-    };
+      attentionRevision: attentionRevision(opportunity.subject, opportunity.attentionBasisEventIds),
+    } as WorkItem;
   });
 
   return items.sort(compareWorkItems);

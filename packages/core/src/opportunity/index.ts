@@ -47,7 +47,7 @@ export type Opportunity =
   | OpportunityBase<"AssignedActionNeeded", { readonly kind: "assignment"; readonly id: string }>
   | OpportunityBase<"RiskDetected", { readonly kind: "check"; readonly id: string }>;
 
-/** The subset the (still email-shaped) decision layer can consume. See prioritize(). */
+/** The conversation subset of Opportunity. See detectOpportunities(). */
 export type ThreadOpportunity = Extract<Opportunity, { subject: { kind: "thread" } }>;
 
 function groupBySubject(signals: Signal[]): Map<string, Signal[]> {
@@ -62,14 +62,15 @@ function groupBySubject(signals: Signal[]): Map<string, Signal[]> {
 }
 
 /**
- * Derive thread (email) Opportunities from Context. Deterministic given `now`. A
- * thread yields a ReplyNeeded Opportunity only if it is actually awaiting a
- * reply; automated / low-value threads (which carry no AwaitingReply Signal)
+ * Derive conversation (thread) Opportunities from Context. Deterministic given
+ * `now`. A thread yields a ReplyNeeded Opportunity only if it is actually awaiting
+ * a reply; automated / low-value threads (which carry no AwaitingReply Signal)
  * yield nothing — silence is a valid output.
  *
- * Returns `ThreadOpportunity[]` on purpose: the decision layer is type-gated to
- * thread subjects until #46, so this feeds it directly. GitHub work is derived
- * separately (see understanding/work-opportunities.ts) and cannot flow here.
+ * This is one of two detectors; collaborative-work Opportunities (reviews,
+ * assignments, checks) are derived separately in
+ * understanding/work-opportunities.ts. buildWorkItems() composes both into one
+ * source-neutral ranked list (#46).
  */
 export function detectOpportunities(context: ContextState, now: string): ThreadOpportunity[] {
   const signals = detectSignals(context, now);
@@ -93,10 +94,11 @@ export function detectOpportunities(context: ContextState, now: string): ThreadO
     const threadId = awaiting.subject.id;
     const thread = context.threads[threadId];
 
-    // The attention revision for a conversation is its latest inbound message: a
-    // new reply changes what the user sees (and should resurface a handled thread),
-    // whereas re-deriving from unchanged history must not.
-    const latestMessageEventId = thread?.messages[thread.messages.length - 1]?.eventId;
+    // The attention revision for a conversation is its newest inbound message by
+    // occurrence time (Context's `latestMessageEventId`, never the last appended
+    // element): a genuinely new reply changes what the user sees and should
+    // resurface a handled thread, whereas a backfilled older message must not.
+    const latestMessageEventId = thread?.latestMessageEventId;
     const attentionBasisEventIds = latestMessageEventId ? [latestMessageEventId] : sourceEventIds;
 
     opportunities.push({

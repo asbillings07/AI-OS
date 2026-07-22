@@ -5,7 +5,7 @@ import { contextProjection, type ContextState } from "../understanding/context.j
 import { detectOpportunities } from "../opportunity/index.js";
 import { estimateCapacity } from "../capacity/index.js";
 import { attentionProjection } from "../attention/index.js";
-import { buildWorkItems, prioritize, compareWorkItems, type WorkItem } from "./index.js";
+import { buildWorkItems, prioritize, compareWorkItems, workItemId, type WorkItem } from "./index.js";
 
 const NO_ATTENTION = attentionProjection.init();
 
@@ -59,7 +59,7 @@ describe("Prioritization (#29)", () => {
     expect(item).toBeDefined();
     // The structured Explanation the reviewer asked for.
     expect(item).toMatchObject({
-      id: "wi-t1",
+      id: "wi-thread:t1",
       subject: { kind: "thread", id: "t1" },
       title: "Quick question",
     });
@@ -130,6 +130,9 @@ describe("Prioritization (#29)", () => {
 
 describe("cross-source ranking is source-neutral (#46)", () => {
   function itemFixture(overrides: Partial<WorkItem>): WorkItem {
+    // WorkItem is a distributed union (kind paired to subject); the spread of a
+    // Partial can't prove membership to the compiler, so we assert it in this test
+    // scaffold. Callers pass a consistent kind/subject pair.
     return {
       id: "wi-x",
       subject: { kind: "thread", id: "x" },
@@ -145,9 +148,33 @@ describe("cross-source ranking is source-neutral (#46)", () => {
       evidence: [],
       createdFromEventIds: [],
       attentionBasisEventIds: [],
+      attentionRevision: "rev",
       ...overrides,
-    };
+    } as WorkItem;
   }
+
+  it("gives every Subject kind a globally-unique Work Item id (no cross-kind collision)", () => {
+    // A thread whose opaque id happens to look like a review's subjectKey must not
+    // collide with an actual review of that change.
+    const threadLike = workItemId({ kind: "thread", id: `review:${"acme/orion#128"}` });
+    const review = workItemId({ kind: "review", id: "acme/orion#128" });
+    expect(threadLike).not.toBe(review);
+    expect(review).toBe("wi-review:acme/orion#128");
+    expect(threadLike).toBe("wi-thread:review:acme/orion#128");
+  });
+
+  it("breaks ties by ordinal comparison, not host locale", () => {
+    // In many locales 'a' sorts before 'Z'; ordinal (code-unit) order puts the
+    // uppercase 'Z' (0x5A) before lowercase 'a' (0x61). We pin the ordinal result.
+    const upper = itemFixture({ id: "u", subject: { kind: "review", id: "Z" }, kind: "ReviewNeeded" });
+    const lower = itemFixture({ id: "l", subject: { kind: "review", id: "a" }, kind: "ReviewNeeded" });
+    expect([lower, upper].slice().sort(compareWorkItems).map((i) => i.subject.id)).toEqual(["Z", "a"]);
+    // Punctuation/Unicode ordering is likewise deterministic and stable.
+    const punct = itemFixture({ id: "p", subject: { kind: "review", id: "a-b" }, kind: "ReviewNeeded" });
+    const unicode = itemFixture({ id: "x", subject: { kind: "review", id: "a\u00e9" }, kind: "ReviewNeeded" });
+    const sorted = [unicode, punct].slice().sort(compareWorkItems).map((i) => i.subject.id);
+    expect(sorted).toEqual(["a-b", "a\u00e9"]);
+  });
 
   it("breaks exact ties by subjectKey, never by detector/array order", () => {
     // Two items identical on every ranked dimension: only the subject differs.

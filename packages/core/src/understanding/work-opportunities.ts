@@ -10,10 +10,10 @@ import { subjectKey, type SubjectRef } from "../subject/index.js";
  * `subject.kind` by the discriminated union: review -> ReviewNeeded, assignment ->
  * AssignedActionNeeded, check -> RiskDetected.
  *
- * This is intentionally NOT called by buildWorkItems: the decision layer is
- * type-gated to thread Opportunities until #46 (see opportunity/index.ts
- * ThreadOpportunity and prioritize()). These Opportunities exist and are proven,
- * but cannot become Work Items yet.
+ * buildWorkItems() composes these with the conversation detector
+ * (opportunity/index.ts) into one source-neutral ranked list (#46): a review,
+ * assignment, or check becomes a Work Item through exactly the same path as a
+ * conversation.
  */
 
 function strength(signals: readonly Signal[], kind: Signal["kind"]): number {
@@ -23,9 +23,9 @@ function strength(signals: readonly Signal[], kind: Signal["kind"]): number {
 /**
  * Opportunity value answers only "is there value in acting?". It is derived
  * SOLELY from the subject-defining significance Signal. Commitment and Aging stay
- * attached to the Opportunity (for explanation and later prioritization) but must
- * NOT inflate value — otherwise #46 would double-count them as responsibility and
- * urgency when it feeds these Opportunities through the Prioritization Engine.
+ * attached to the Opportunity (for explanation and prioritization) but must NOT
+ * inflate value — otherwise the Prioritization Engine would double-count them as
+ * responsibility and urgency when it ranks these Opportunities.
  */
 function opportunityValue(signals: readonly Signal[]): number {
   return Math.max(
