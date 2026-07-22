@@ -39,8 +39,30 @@ function errorResponse(
     status,
     statusText: "ERR",
     headers,
+    text: async () => JSON.stringify(body),
     json: async () => body,
   } as unknown as Response;
+}
+
+/** An OK response whose body read (json) fails the first `failTimes` times. */
+function flakyBodyResponse(id: string, failTimes: number, error: () => Error): { next: () => Response } {
+  let calls = 0;
+  return {
+    next: () => {
+      calls += 1;
+      const shouldFail = calls <= failTimes;
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: new Headers(),
+        json: async () => {
+          if (shouldFail) throw error();
+          return { id, threadId: "t", snippet: "", payload: { headers: [] } };
+        },
+      } as unknown as Response;
+    },
+  };
 }
 
 interface Harness {
@@ -387,5 +409,100 @@ describe("LiveGmailSource", () => {
     );
     expect(() => new LiveGmailSource({ tokenProvider, maxMessages: -1 })).toThrow(/maxMessages/);
     expect(() => new LiveGmailSource({ tokenProvider, timeoutMs: -1 })).toThrow(/timeoutMs/);
+  });
+
+  it("retries a hydration body-read failure then succeeds", async () => {
+    const flaky = flakyBodyResponse("m1", 1, () => new Error("socket hang up"));
+    const fetchImpl = (async (input: string | URL) => {
+      const url = String(input);
+      return isList(url) ? listResponse(["m1"]) : flaky.next();
+    }) as unknown as typeof fetch;
+
+    const h = makeSource(fetchImpl);
+    expect((await h.source.fetchMessages()).map((m) => m.id)).toEqual(["m1"]);
+    expect(retries(h)[0]!.fields).toMatchObject({ operation: "message", reason: "network" });
+  });
+
+  it("retries a list body-read failure then succeeds", async () => {
+    let listCalls = 0;
+    const fetchImpl = (async (input: string | URL) => {
+      const url = String(input);
+      if (isList(url)) {
+        listCalls += 1;
+        if (listCalls === 1) {
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            headers: new Headers(),
+            json: async () => {
+              throw new Error("ECONNRESET");
+            },
+          } as unknown as Response;
+        }
+        return listResponse(["m1"]);
+      }
+      return messageResponse(idOf(url)!);
+    }) as unknown as typeof fetch;
+
+    const h = makeSource(fetchImpl);
+    expect((await h.source.fetchMessages()).map((m) => m.id)).toEqual(["m1"]);
+    expect(retries(h)[0]!.fields).toMatchObject({ operation: "list", reason: "network" });
+  });
+
+  it("treats a malformed OK body as non-retryable and drops the message", async () => {
+    const fetchImpl = (async (input: string | URL) => {
+      const url = String(input);
+      if (isList(url)) return listResponse(["m1"]);
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: new Headers(),
+        json: async () => {
+          throw new SyntaxError("Unexpected token < in JSON");
+        },
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const h = makeSource(fetchImpl);
+    expect(await h.source.fetchMessages()).toEqual([]);
+    expect(h.sleeps).toHaveLength(0); // never retried
+    expect(drops(h)[0]!.fields).toMatchObject({ messageId: "m1", reason: "malformed_body", attempts: 1 });
+  });
+
+  it("settles within the budget when the token provider never resolves", async () => {
+    const neverResolves: AccessTokenProvider = {
+      getAccessToken: () => new Promise<string>(() => {}),
+    };
+    const source = new LiveGmailSource({
+      tokenProvider: neverResolves,
+      fetchImpl: (async () => listResponse([])) as unknown as typeof fetch,
+      maxSyncDurationMs: 30,
+      sleepImpl: async () => {},
+    });
+
+    const start = Date.now();
+    await expect(source.fetchMessages()).rejects.toThrow(/aborted by sync budget/);
+    expect(Date.now() - start).toBeLessThan(2000);
+  });
+
+  it("allows sparse pages up to a conservative ceiling (four one-message pages)", async () => {
+    let listCalls = 0;
+    const fetchImpl = (async (input: string | URL) => {
+      const url = String(input);
+      if (isList(url)) {
+        listCalls += 1;
+        if (listCalls === 1) return listResponse(["m1"], "p2");
+        if (listCalls === 2) return listResponse(["m2"], "p3");
+        if (listCalls === 3) return listResponse(["m3"], "p4");
+        return listResponse(["m4"]);
+      }
+      return messageResponse(idOf(url)!);
+    }) as unknown as typeof fetch;
+
+    const { source } = makeSource(fetchImpl, { maxMessages: 100, pageSize: 100 });
+    const messages = await source.fetchMessages();
+    expect(messages.map((m) => m.id)).toEqual(["m1", "m2", "m3", "m4"]);
   });
 });

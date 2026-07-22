@@ -32,7 +32,13 @@ export class FixtureGmailSource implements GmailSource {
  * — those live behind the token provider (see `@orion/gmail-auth`).
  */
 export interface AccessTokenProvider {
-  getAccessToken(): Promise<string>;
+  /**
+   * Return a usable access token. `signal` (when provided) lets a caller bound
+   * the call — e.g. Orion's overall sync deadline — so a stalled live token
+   * refresh can be abandoned. Deadline-aware providers should cancel on abort;
+   * providers that ignore it still work because callers also race the deadline.
+   */
+  getAccessToken(options?: { signal?: AbortSignal }): Promise<string>;
 }
 
 /**
@@ -184,19 +190,22 @@ export class LiveGmailSource implements GmailSource {
     assertNonNegativeFinite("timeoutMs", this.#timeoutMs);
     assertNonNegativeFinite("maxSyncDurationMs", this.#maxSyncDurationMs);
 
-    // Defensive page ceiling: enough pages to reach maxMessages even if pages come
-    // back short, but bounded so a server emitting endless distinct tokens can't loop.
-    this.#maxPages = Math.ceil(this.#maxMessages / this.#pageSize) * 2 + 1;
+    // Conservative page ceiling. Gmail's `maxResults` is a maximum, not a
+    // guarantee: pages may be sparse while still returning distinct valid tokens,
+    // so we do NOT assume any page fullness. The repeated-token check and the
+    // overall deadline are the real loop defenses; this only stops an unbounded
+    // distinct-token loop. Worst legitimate case is one id per page, so allow one
+    // page per collectable id plus slack.
+    this.#maxPages = this.#maxMessages + 100;
   }
 
   async fetchMessages(): Promise<RawGmailMessage[]> {
     if (this.#maxMessages === 0) return [];
-    // One token per sync; the provider refreshes it as needed and caches it.
-    const token = await this.#tokenProvider.getAccessToken();
 
-    // The overall deadline aborts real in-flight fetches (not a Promise.race that
-    // leaves requests running). Each attempt further caps its own timeout by the
-    // remaining budget below.
+    // Start the overall deadline BEFORE token acquisition: a stalled live token
+    // refresh must not hang the shared read-time sync. The deadline aborts real
+    // in-flight fetches (not a Promise.race that leaves requests running); each
+    // attempt further caps its own timeout by the remaining budget below.
     const deadline = new AbortController();
     const deadlineAt = Date.now() + this.#maxSyncDurationMs;
     const timer = setTimeout(
@@ -206,11 +215,49 @@ export class LiveGmailSource implements GmailSource {
     (timer as { unref?: () => void }).unref?.();
 
     try {
+      const token = await this.#acquireToken(deadline.signal, deadlineAt);
       const ids = await this.#listIds(token, deadlineAt, deadline.signal);
       return await this.#hydrate(ids, token, deadlineAt, deadline.signal);
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /**
+   * Acquire the access token within the overall budget. We pass the deadline
+   * signal so a deadline-aware provider can cancel a stalled refresh, and also
+   * race the deadline directly so `fetchMessages()` always settles within budget
+   * even if the provider ignores the signal. The abandoned provider promise is
+   * handled (never an unhandled rejection) but its result is discarded.
+   */
+  #acquireToken(deadlineSignal: AbortSignal, deadlineAt: number): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      if (deadlineSignal.aborted) {
+        reject(this.#deadlineError("token", deadlineAt));
+        return;
+      }
+      let settled = false;
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        deadlineSignal.removeEventListener("abort", onAbort);
+        fn();
+      };
+      const onAbort = () => finish(() => reject(this.#deadlineError("token", deadlineAt)));
+      deadlineSignal.addEventListener("abort", onAbort, { once: true });
+      this.#tokenProvider.getAccessToken({ signal: deadlineSignal }).then(
+        (token) => finish(() => resolve(token)),
+        (error) => finish(() => reject(error)),
+      );
+    });
+  }
+
+  #deadlineError(operation: string, deadlineAt: number): GmailRequestError {
+    return new GmailRequestError(`Gmail ${operation} acquisition aborted by sync budget`, {
+      status: 0,
+      reason: "deadline",
+      attempts: this.#remaining(deadlineAt) <= 0 ? 1 : 0,
+    });
   }
 
   /**
@@ -339,9 +386,14 @@ export class LiveGmailSource implements GmailSource {
   }
 
   /**
-   * One request with retry/backoff. Classification lives entirely here: a 401 is
-   * a fatal `GmailAuthError`; 429/5xx/rate-limit-403/network/timeout are retried
-   * up to `maxAttempts` (total, including the first) with full-jitter backoff,
+   * One request with retry/backoff. Classification lives entirely here.
+   *
+   * Crucially, the response body is consumed INSIDE the try/catch: `fetch()`
+   * resolves once headers arrive, but reading the body can still time out or drop
+   * the connection. Those body-read failures are transient (retried) exactly like
+   * connection failures; genuinely malformed JSON is non-retryable. A 401 is a
+   * fatal `GmailAuthError`; 429/5xx/rate-limit-403/network/timeout are retried up
+   * to `maxAttempts` (total, including the first) with full-jitter backoff,
    * `delay = max(jitter, Retry-After)`; the deadline aborts the underlying fetch.
    */
   async #request<T>(url: string, token: string, ctx: RequestContext): Promise<T> {
@@ -357,62 +409,94 @@ export class LiveGmailSource implements GmailSource {
         });
       }
 
-      let response: Response;
+      let status = 0;
+      let reason: string | undefined;
+      let retryAfterMs = 0;
       try {
-        response = await this.#fetch(url, {
+        const response = await this.#fetch(url, {
           headers: { authorization: `Bearer ${token}` },
           signal: AbortSignal.any([ctx.deadlineSignal, AbortSignal.timeout(Math.min(this.#timeoutMs, remaining))]),
         });
-      } catch (error) {
-        // The deadline is fatal for this request; a per-attempt timeout or network
-        // error is transient and eligible for retry.
-        if (ctx.deadlineSignal.aborted) {
-          throw new GmailRequestError(`Gmail ${ctx.operation} request aborted by sync budget (${url})`, {
-            status: 0,
-            reason: "deadline",
-            attempts: attempt,
-          });
+        // Body consumption is part of the request: a success is only a success
+        // once the JSON is fully read and parsed.
+        if (response.ok) return (await response.json()) as T;
+
+        status = response.status;
+        if (status === 401) {
+          throw new GmailAuthError(`Gmail API authentication failed (401) (${url})`);
         }
-        const reason = error instanceof Error && error.name === "TimeoutError" ? "timeout" : "network";
-        const delayMs = this.#nextDelay(attempt, ctx.deadlineAt, 0);
-        if (delayMs === null) {
-          const label = reason === "timeout" ? "timed out" : "network error";
+        // Reading the error body can itself fail transiently; that failure now
+        // routes through the retry classifier below instead of being swallowed.
+        reason = await this.#reasonFrom(response);
+        retryAfterMs = parseRetryAfter(response.headers);
+      } catch (error) {
+        if (error instanceof GmailAuthError) throw error;
+        const kind = this.#classifyFailure(error, ctx.deadlineSignal);
+        if (kind === "deadline") {
           throw new GmailRequestError(
-            `Gmail ${ctx.operation} request ${label} after ${attempt} attempt(s) (${url})`,
-            { status: 0, reason, attempts: attempt },
+            `Gmail ${ctx.operation} request aborted by sync budget (${url})`,
+            { status: 0, reason: "deadline", attempts: attempt },
             { cause: error },
           );
         }
-        this.#traceRetry(ctx, attempt, 0, reason, delayMs);
+        if (kind === "malformed") {
+          // A well-formed HTTP response with an unparseable body won't get better
+          // by retrying — treat it as non-retryable.
+          throw new GmailRequestError(
+            `Gmail ${ctx.operation} response body was malformed after ${attempt} attempt(s) (${url})`,
+            { status, reason: "malformed_body", attempts: attempt },
+            { cause: error },
+          );
+        }
+        // timeout | network -> transient, eligible for retry.
+        const delayMs = this.#nextDelay(attempt, ctx.deadlineAt, 0);
+        if (delayMs === null) {
+          const label = kind === "timeout" ? "timed out" : "network error";
+          throw new GmailRequestError(
+            `Gmail ${ctx.operation} request ${label} after ${attempt} attempt(s) (${url})`,
+            { status, reason: kind, attempts: attempt },
+            { cause: error },
+          );
+        }
+        this.#traceRetry(ctx, attempt, status, kind, delayMs);
         await this.#sleep(delayMs);
         continue;
       }
 
-      if (response.ok) return (await response.json()) as T;
-
-      if (response.status === 401) {
-        throw new GmailAuthError(`Gmail API authentication failed (401) (${url})`);
+      // A non-ok response we could read: retry only known-transient statuses.
+      if (!this.#isRetryable(status, reason)) {
+        throw new GmailRequestError(`Gmail API request failed: ${status} (${url})`, {
+          status,
+          reason: reason ?? "http_error",
+          attempts: attempt,
+        });
       }
-
-      const reason = await this.#reasonFrom(response);
-      if (!this.#isRetryable(response.status, reason)) {
-        throw new GmailRequestError(
-          `Gmail API request failed: ${response.status} ${response.statusText} (${url})`,
-          { status: response.status, reason: reason ?? "http_error", attempts: attempt },
-        );
-      }
-
-      const retryAfterMs = parseRetryAfter(response.headers);
       const delayMs = this.#nextDelay(attempt, ctx.deadlineAt, retryAfterMs);
       if (delayMs === null) {
         throw new GmailRequestError(
-          `Gmail API request failed after ${attempt} attempt(s): ${response.status} (${url})`,
-          { status: response.status, reason: reason ?? "http_error", attempts: attempt },
+          `Gmail API request failed after ${attempt} attempt(s): ${status} (${url})`,
+          { status, reason: reason ?? "http_error", attempts: attempt },
         );
       }
-      this.#traceRetry(ctx, attempt, response.status, reason ?? "http_error", delayMs);
+      this.#traceRetry(ctx, attempt, status, reason ?? "http_error", delayMs);
       await this.#sleep(delayMs);
     }
+  }
+
+  /**
+   * Classify a thrown failure (from the fetch OR from reading its body). The
+   * deadline is fatal; a `SyntaxError` is a malformed body (non-retryable); a
+   * `TimeoutError` is a per-attempt timeout; everything else is a network error.
+   * Both timeout and network are transient and eligible for retry.
+   */
+  #classifyFailure(
+    error: unknown,
+    deadlineSignal: AbortSignal,
+  ): "deadline" | "malformed" | "timeout" | "network" {
+    if (deadlineSignal.aborted) return "deadline";
+    if (error instanceof SyntaxError) return "malformed";
+    if (error instanceof Error && error.name === "TimeoutError") return "timeout";
+    return "network";
   }
 
   /**
@@ -459,14 +543,17 @@ export class LiveGmailSource implements GmailSource {
   }
 
   /**
-   * Pull Google's error reason from the response body, tolerating malformed or
-   * non-JSON bodies (returns undefined rather than throwing). Never surfaces the
-   * body itself. Shape: `{ error: { errors: [{ reason }], status } }`.
+   * Pull Google's error reason from the response body. Reads the raw text first
+   * so a transient body-read failure (timeout/network) propagates and is retried
+   * by the caller; only a genuinely malformed JSON body is swallowed (returns
+   * undefined, so classification falls back to the HTTP status). Never surfaces
+   * the body itself. Shape: `{ error: { errors: [{ reason }], status } }`.
    */
   async #reasonFrom(response: Response): Promise<string | undefined> {
+    const text = await response.text();
     let body: unknown;
     try {
-      body = await response.json();
+      body = JSON.parse(text);
     } catch {
       return undefined;
     }

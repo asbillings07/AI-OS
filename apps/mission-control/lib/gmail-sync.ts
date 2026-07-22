@@ -1,5 +1,11 @@
 import { LogEvents, type Logger, type OrionRuntime } from "@orion/core";
-import { GmailSkill, LiveGmailSource, GmailAuthError } from "@orion/gmail-skill";
+import {
+  GmailSkill,
+  LiveGmailSource,
+  GmailAuthError,
+  type GmailSource,
+  type GmailTrace,
+} from "@orion/gmail-skill";
 import { ReconnectRequiredError } from "@orion/gmail-auth";
 import { getGmailIntegration } from "./gmail-auth";
 
@@ -61,23 +67,17 @@ async function runSync(runtime: OrionRuntime, logger: Logger): Promise<GmailSync
   }
 
   try {
-    // Count drops from the trace stream: partial success stays healthy, but a sync
-    // that listed messages and hydrated none is not (see the ok computation below).
-    let dropped = 0;
-    const source = new LiveGmailSource({
-      tokenProvider: service,
-      query: "in:inbox newer_than:7d",
-      maxMessages: 100,
-      onTrace: (event, fields) => {
-        logger.event(event, fields);
-        if (event === LogEvents.GmailMessageDropped) dropped += 1;
-      },
-    });
-    const events = await new GmailSkill({ source }).ingest(runtime);
-    // Empty inbox (nothing listed, nothing dropped) and partial success are both
-    // healthy; only a total hydration failure (listed > 0, ingested 0) is not.
-    const ok = events.length > 0 || dropped === 0;
-    return { mode: "live", ok, ingested: events.length, dropped };
+    return await ingestLiveGmail(
+      runtime,
+      logger,
+      (onTrace) =>
+        new LiveGmailSource({
+          tokenProvider: service,
+          query: "in:inbox newer_than:7d",
+          maxMessages: 100,
+          onTrace,
+        }),
+    );
   } catch (error) {
     // A genuine auth failure flips the credential to reconnect_required; other
     // failures (timeout, 5xx, network) leave it connected for the next attempt.
@@ -90,6 +90,31 @@ async function runSync(runtime: OrionRuntime, logger: Logger): Promise<GmailSync
     }
     return { mode: "live", ok: false, ingested: 0, error: messageOf(error) };
   }
+}
+
+/**
+ * The live ingest core, extracted so the drop-counting and health rule are
+ * testable without the OAuth/SQLite integration singleton. `buildSource` receives
+ * the trace sink so drops are counted through the same path the source uses.
+ *
+ * Health: an empty inbox and partial success are both healthy; only a total
+ * hydration failure (messages were listed but none ingested) is `ok: false`.
+ */
+export async function ingestLiveGmail(
+  runtime: OrionRuntime,
+  logger: Logger,
+  buildSource: (onTrace: GmailTrace) => GmailSource,
+): Promise<GmailSyncResult> {
+  let dropped = 0;
+  const source = buildSource((event, fields) => {
+    // Count the drop BEFORE logging. The source swallows a throwing tracer, so
+    // counting first keeps all-drop health honest even if the logger throws.
+    if (event === LogEvents.GmailMessageDropped) dropped += 1;
+    logger.event(event, fields);
+  });
+  const events = await new GmailSkill({ source }).ingest(runtime);
+  const ok = events.length > 0 || dropped === 0;
+  return { mode: "live", ok, ingested: events.length, dropped };
 }
 
 function messageOf(error: unknown): string {
