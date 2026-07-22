@@ -121,7 +121,7 @@ and deletes the local credential.
   deadline aborts in-flight requests, so a Gmail outage can never hang a render.
 - **Reconnect vs retry.** A revoked/expired authorization (or an unrecoverable
   `401`) becomes a durable **Reconnect Gmail** prompt. Transient failures
-  (timeouts, `5xx`, `403`, network) just mark the last sync unhealthy and retry
+  (timeouts, `429`, `5xx`, rate-limit `403`, network) just mark the last sync unhealthy and retry
   on the next render. A sync that lists messages but hydrates none is unhealthy;
   partial success (some messages dropped, some ingested) stays healthy.
 

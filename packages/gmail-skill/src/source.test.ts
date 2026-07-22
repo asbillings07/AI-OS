@@ -487,6 +487,54 @@ describe("LiveGmailSource", () => {
     expect(Date.now() - start).toBeLessThan(2000);
   });
 
+  it("never leaks a pagination token in a user-visible error", async () => {
+    const secret = "SECRET-PAGE-TOKEN";
+    let listCalls = 0;
+    const fetchImpl = (async (input: string | URL) => {
+      const url = String(input);
+      if (isList(url)) {
+        listCalls += 1;
+        // Page 1 hands back a token; page 2's URL carries pageToken=<secret> and
+        // then fails non-retryably, so the token would surface in the error URL.
+        return listCalls === 1 ? listResponse(["m1"], secret) : errorResponse(404);
+      }
+      return messageResponse(idOf(url)!);
+    }) as unknown as typeof fetch;
+
+    const { source } = makeSource(fetchImpl, { maxMessages: 100 });
+    const error = (await source.fetchMessages().catch((e) => e)) as Error;
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).not.toContain(secret);
+    expect(error.message).not.toContain("pageToken");
+  });
+
+  it("honors Retry-After even when the error body read fails", async () => {
+    let attempts = 0;
+    const fetchImpl = (async (input: string | URL) => {
+      const url = String(input);
+      if (isList(url)) return listResponse(["m1"]);
+      attempts += 1;
+      if (attempts === 1) {
+        const headers = new Headers();
+        headers.set("retry-after", "2");
+        return {
+          ok: false,
+          status: 429,
+          statusText: "ERR",
+          headers,
+          text: async () => {
+            throw new Error("socket hang up");
+          },
+        } as unknown as Response;
+      }
+      return messageResponse("m1");
+    }) as unknown as typeof fetch;
+
+    const h = makeSource(fetchImpl, { baseRetryDelayMs: 500 });
+    expect((await h.source.fetchMessages()).map((m) => m.id)).toEqual(["m1"]);
+    expect(h.sleeps).toEqual([2000]); // Retry-After honored despite the body-read failure
+  });
+
   it("allows sparse pages up to a conservative ceiling (four one-message pages)", async () => {
     let listCalls = 0;
     const fetchImpl = (async (input: string | URL) => {

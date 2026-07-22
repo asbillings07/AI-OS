@@ -171,7 +171,11 @@ export class GoogleAuthorizationService implements AccessTokenProvider {
    * the `tokens` event (status-preserving). `invalid_grant`/revocation flips the
    * durable status to `reconnect_required`; transient errors propagate as-is.
    */
-  async getAccessToken(): Promise<string> {
+  async getAccessToken(options?: { signal?: AbortSignal }): Promise<string> {
+    const signal = options?.signal;
+    if (signal?.aborted) {
+      throw new Error("Gmail token acquisition aborted before it began.");
+    }
     const credential = await this.#store.read();
     if (!credential) {
       throw new ReconnectRequiredError("No Gmail credential stored; connect Gmail first.");
@@ -182,7 +186,10 @@ export class GoogleAuthorizationService implements AccessTokenProvider {
 
     const client = this.#getRefreshClient(credential.refreshToken);
     try {
-      const { token } = await client.getAccessToken();
+      // Honor the caller's deadline: reject promptly on abort while letting the
+      // abandoned refresh settle in the background (any rotation it produces is
+      // guarded in #handleRotatedRefreshToken, so it can't revive a dead client).
+      const { token } = await this.#awaitAbortable(client.getAccessToken(), signal);
       if (!token) {
         throw new ReconnectRequiredError("Google returned no access token.");
       }
@@ -263,15 +270,51 @@ export class GoogleAuthorizationService implements AccessTokenProvider {
   }
 
   #handleRotatedRefreshToken(client: OAuth2Client, refreshToken: string): void {
-    // Keep the cache key in sync so the rotated token still hits the cache.
-    if (this.#cachedClient?.client === client) {
-      this.#cachedClient = { refreshToken, client };
-    }
+    // Ignore a rotation from a client that is no longer the active cached client.
+    // After a disconnect/reconnect the cache is cleared or replaced, so a late
+    // refresh completing on the OLD client must never overwrite the new credential.
+    if (this.#cachedClient?.client !== client) return;
+    this.#cachedClient = { refreshToken, client };
     // Persist only the token + timestamp (status preserved atomically). Never
     // leave the promise unobserved: serialize it and route failures to onError.
     this.#pendingPersist = this.#pendingPersist
-      .then(() => this.#store.updateRefreshToken(refreshToken, new Date().toISOString()))
+      .then(() => {
+        // Re-check at run time: a disconnect/reconnect between scheduling and
+        // running this persistence must cancel the now-obsolete rotation.
+        if (this.#cachedClient?.client !== client) return;
+        return this.#store.updateRefreshToken(refreshToken, new Date().toISOString());
+      })
       .catch((error) => this.#onError(error));
+  }
+
+  /**
+   * Await `promise`, but reject as soon as `signal` aborts. The abandoned promise
+   * is caught so it never becomes an unhandled rejection; its eventual result is
+   * discarded (a rotation it triggers is still handled, and guarded, elsewhere).
+   */
+  #awaitAbortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (!signal) return promise;
+    if (signal.aborted) {
+      promise.catch(() => {});
+      return Promise.reject(new Error("Gmail token acquisition aborted by the caller's deadline."));
+    }
+    return new Promise<T>((resolve, reject) => {
+      const onAbort = () => {
+        promise.catch(() => {});
+        reject(new Error("Gmail token acquisition aborted by the caller's deadline."));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      promise.then(
+        (value) => {
+          signal.removeEventListener("abort", onAbort);
+          resolve(value);
+        },
+        (error) => {
+          signal.removeEventListener("abort", onAbort);
+          reject(error);
+        },
+      );
+    });
   }
 
   async #markReconnectRequired(): Promise<void> {

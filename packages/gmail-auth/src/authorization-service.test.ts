@@ -201,6 +201,34 @@ describe("GoogleAuthorizationService.getAccessToken", () => {
     expect(stored?.refreshToken).toBe("rt-rotated");
     expect(stored?.status).toBe("active");
   });
+
+  it("rejects immediately when the provided signal is already aborted", async () => {
+    const store = new InMemoryCredentialStore(activeCredential);
+    const { service } = serviceWith({}, store);
+    await expect(service.getAccessToken({ signal: AbortSignal.abort() })).rejects.toThrow(/aborted/);
+  });
+
+  it("ignores a rotated token from an obsolete client after reconnect", async () => {
+    const store = new InMemoryCredentialStore(activeCredential);
+    const { service, clients } = serviceWith({}, store);
+    // First call creates the client and registers its `tokens` listener.
+    await service.getAccessToken();
+    const oldClient = clients[0]!;
+    const tokensListener = oldClient.on.mock.calls.find((c) => c[0] === "tokens")?.[1] as
+      | ((c: Credentials) => void)
+      | undefined;
+    expect(tokensListener).toBeTypeOf("function");
+
+    // Reconnect: writes a new credential (rt-initial) and clears the cached client.
+    await service.handleCallback("code");
+
+    // The obsolete client completes a late refresh and rotates its token. It must
+    // NOT overwrite the freshly reconnected credential.
+    tokensListener!({ refresh_token: "rt-obsolete-should-be-ignored" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect((await store.read())?.refreshToken).toBe("rt-initial");
+  });
 });
 
 describe("GoogleAuthorizationService lifecycle", () => {

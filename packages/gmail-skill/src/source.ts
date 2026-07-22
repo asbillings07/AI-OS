@@ -397,12 +397,15 @@ export class LiveGmailSource implements GmailSource {
    * `delay = max(jitter, Retry-After)`; the deadline aborts the underlying fetch.
    */
   async #request<T>(url: string, token: string, ctx: RequestContext): Promise<T> {
+    // Errors surface in GmailSyncResult.error; a list URL can carry a pageToken
+    // (and the query), so only the redacted origin+path is ever user-visible.
+    const safeUrl = redactUrl(url);
     let attempt = 0;
     while (true) {
       attempt += 1;
       const remaining = this.#remaining(ctx.deadlineAt);
       if (remaining <= 0) {
-        throw new GmailRequestError(`Gmail ${ctx.operation} request ran out of budget (${url})`, {
+        throw new GmailRequestError(`Gmail ${ctx.operation} request ran out of budget (${safeUrl})`, {
           status: 0,
           reason: "deadline",
           attempts: attempt - 1,
@@ -423,18 +426,21 @@ export class LiveGmailSource implements GmailSource {
 
         status = response.status;
         if (status === 401) {
-          throw new GmailAuthError(`Gmail API authentication failed (401) (${url})`);
+          throw new GmailAuthError(`Gmail API authentication failed (401) (${safeUrl})`);
         }
+        // Parse Retry-After from the headers we already have BEFORE reading the
+        // body: a body read that fails transiently must still honor the server's
+        // backoff hint (it's captured in the outer `retryAfterMs` for the catch).
+        retryAfterMs = parseRetryAfter(response.headers);
         // Reading the error body can itself fail transiently; that failure now
         // routes through the retry classifier below instead of being swallowed.
         reason = await this.#reasonFrom(response);
-        retryAfterMs = parseRetryAfter(response.headers);
       } catch (error) {
         if (error instanceof GmailAuthError) throw error;
         const kind = this.#classifyFailure(error, ctx.deadlineSignal);
         if (kind === "deadline") {
           throw new GmailRequestError(
-            `Gmail ${ctx.operation} request aborted by sync budget (${url})`,
+            `Gmail ${ctx.operation} request aborted by sync budget (${safeUrl})`,
             { status: 0, reason: "deadline", attempts: attempt },
             { cause: error },
           );
@@ -443,17 +449,18 @@ export class LiveGmailSource implements GmailSource {
           // A well-formed HTTP response with an unparseable body won't get better
           // by retrying — treat it as non-retryable.
           throw new GmailRequestError(
-            `Gmail ${ctx.operation} response body was malformed after ${attempt} attempt(s) (${url})`,
+            `Gmail ${ctx.operation} response body was malformed after ${attempt} attempt(s) (${safeUrl})`,
             { status, reason: "malformed_body", attempts: attempt },
             { cause: error },
           );
         }
-        // timeout | network -> transient, eligible for retry.
-        const delayMs = this.#nextDelay(attempt, ctx.deadlineAt, 0);
+        // timeout | network -> transient, eligible for retry. Honor any
+        // Retry-After parsed above (0 for a pure connection failure).
+        const delayMs = this.#nextDelay(attempt, ctx.deadlineAt, retryAfterMs);
         if (delayMs === null) {
           const label = kind === "timeout" ? "timed out" : "network error";
           throw new GmailRequestError(
-            `Gmail ${ctx.operation} request ${label} after ${attempt} attempt(s) (${url})`,
+            `Gmail ${ctx.operation} request ${label} after ${attempt} attempt(s) (${safeUrl})`,
             { status, reason: kind, attempts: attempt },
             { cause: error },
           );
@@ -465,7 +472,7 @@ export class LiveGmailSource implements GmailSource {
 
       // A non-ok response we could read: retry only known-transient statuses.
       if (!this.#isRetryable(status, reason)) {
-        throw new GmailRequestError(`Gmail API request failed: ${status} (${url})`, {
+        throw new GmailRequestError(`Gmail API request failed: ${status} (${safeUrl})`, {
           status,
           reason: reason ?? "http_error",
           attempts: attempt,
@@ -474,7 +481,7 @@ export class LiveGmailSource implements GmailSource {
       const delayMs = this.#nextDelay(attempt, ctx.deadlineAt, retryAfterMs);
       if (delayMs === null) {
         throw new GmailRequestError(
-          `Gmail API request failed after ${attempt} attempt(s): ${status} (${url})`,
+          `Gmail API request failed after ${attempt} attempt(s): ${status} (${safeUrl})`,
           { status, reason: reason ?? "http_error", attempts: attempt },
         );
       }
@@ -566,6 +573,20 @@ export class LiveGmailSource implements GmailSource {
     }
     if (typeof error?.status === "string") return error.status;
     return undefined;
+  }
+}
+
+/**
+ * Reduce a request URL to `origin + pathname` for user-visible errors. The query
+ * string is dropped entirely because a list URL carries a `pageToken` (and the
+ * search query `q`), which must never leak into `GmailSyncResult.error`.
+ */
+function redactUrl(rawUrl: string): string {
+  try {
+    const url = new URL(rawUrl);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return "[gmail-url]";
   }
 }
 
