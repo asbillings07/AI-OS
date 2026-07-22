@@ -9,6 +9,7 @@ Architecture is expected to evolve with implementation. It must stay aligned wit
 ## Implementation
 
 - [The First Vertical Slice](./vertical-slice.md) (#18) — the first end-to-end implementation: a Gmail message flows through the event backbone, the Understanding Engine, Opportunity/Capacity/Prioritization, and into Mission Control, with a user action closing the loop. Shows exactly how the ADRs map to code.
+- [The Second Slice](./second-slice.md) (#44–#46) — a structurally different source (GitHub) flows through the *same* backbone. Shows what generalized cleanly, what the second source forced the core to learn (Subjects, the Attention projection, revision-scoped actions), and why cross-source correlation is deferred as the next domain trigger.
 
 ## The Understanding Engine
 
