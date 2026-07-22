@@ -6,6 +6,7 @@ import type { Logger } from "../observability/index.js";
 import type { ContextState } from "../understanding/index.js";
 import type { AttentionState } from "../attention/index.js";
 import { buildWorkItems } from "../prioritization/index.js";
+import { originatorFor } from "../importance/index.js";
 
 /**
  * Turning a user's decision on a surfaced Work Item into a recorded Event.
@@ -118,7 +119,16 @@ export function buildActionEvent(input: BuildActionEventInput): EventEnvelope | 
   const basisEventIds = surfaced.attentionBasisEventIds;
   const previousActionEventId = attention.dispositions[subjectKey(subject)]?.actionEventId;
   const id = actionEventId({ action, subject, basisEventIds, previousActionEventId });
-  const base = { workItemId, subject, basisEventIds } as const;
+  // Stamp who the work is from (source-neutral, immutable) so Personal Importance
+  // (#65) learns against a uniform key without ever re-opening Context. Omitted
+  // when there is no resolvable originator (e.g. a failing check) -> stays neutral.
+  const originator = originatorFor(subject, context);
+  const base = {
+    workItemId,
+    subject,
+    basisEventIds,
+    ...(originator ? { originator } : {}),
+  } as const;
 
   if (action === "snoozed") {
     const snoozedUntil = new Date(new Date(now).getTime() + SNOOZE_DURATION_MS).toISOString();

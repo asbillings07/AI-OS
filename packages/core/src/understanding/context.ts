@@ -23,6 +23,13 @@ export interface ObservedMessage {
   receivedAt: string;
   /** The Event this fact came from — the root of any Explanation (ADR-0005). */
   eventId: string;
+  /**
+   * The immutable `source` label of the Event this message came from (e.g.
+   * `gmail-skill`). Preserved so a source-neutral originator namespace can be
+   * derived from the winning occurrence without inferring it from `Subject.kind`
+   * (a thread is not always Gmail).
+   */
+  source: string;
 }
 
 export type ThreadStatus = "open" | "handled" | "snoozed" | "dismissed";
@@ -84,6 +91,12 @@ interface OccurrenceContext {
   eventIds: string[];
   /** The Event whose occurrence currently supplies the display fields. */
   latestEventId: string;
+  /**
+   * The immutable `source` label of the winning occurrence (`latestEventId`).
+   * Preserved so an originator namespace can be derived from the actual Source,
+   * not inferred from `Subject.kind` (an assignment is not always GitHub).
+   */
+  latestSource: string;
 }
 
 /** A change awaiting the user's review. Subject id = changeId. */
@@ -188,6 +201,7 @@ function applyReviewRequested(state: ContextState, event: EventEnvelope): Contex
         requestedAt: payload.requestedAt,
         eventIds,
         latestEventId: event.id,
+        latestSource: event.source,
       }
     : { ...existing, eventIds };
   return { ...state, reviews: { ...state.reviews, [key]: review } };
@@ -211,6 +225,7 @@ function applyAssignmentReceived(state: ContextState, event: EventEnvelope): Con
         assignedAt: payload.assignedAt,
         eventIds,
         latestEventId: event.id,
+        latestSource: event.source,
       }
     : { ...existing, eventIds };
   return { ...state, assignments: { ...state.assignments, [key]: assignment } };
@@ -233,6 +248,7 @@ function applyCheckFailed(state: ContextState, event: EventEnvelope): ContextSta
         failedAt: payload.failedAt,
         eventIds,
         latestEventId: event.id,
+        latestSource: event.source,
       }
     : { ...existing, eventIds };
   return { ...state, checks: { ...state.checks, [key]: check } };
@@ -250,6 +266,7 @@ function applyMessageReceived(state: ContextState, event: EventEnvelope): Contex
     body: payload.body,
     receivedAt: payload.receivedAt,
     eventId: event.id,
+    source: event.source,
   };
 
   const participants = new Set(existing?.participants ?? []);

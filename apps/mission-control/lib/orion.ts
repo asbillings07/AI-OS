@@ -7,6 +7,7 @@ import {
   ProjectionHost,
   contextProjection,
   attentionProjection,
+  personalImportanceProjection,
   buildWorkItems,
   buildActionEvent,
   createLogger,
@@ -16,6 +17,7 @@ import {
   type AttentionState,
   type ContextState,
   type Logger,
+  type PersonalImportanceState,
   type WorkItem,
   type WorkItemAction,
 } from "@orion/core";
@@ -29,6 +31,7 @@ interface OrionService {
   runtime: OrionRuntime;
   context: ProjectionHost<ContextState>;
   attention: ProjectionHost<AttentionState>;
+  importance: ProjectionHost<PersonalImportanceState>;
   ai: AiCapabilities;
   logger: Logger;
 }
@@ -50,10 +53,15 @@ async function boot(): Promise<OrionService> {
   const bus = new InProcessEventBus();
   const context = new ProjectionHost(contextProjection);
   const attention = new ProjectionHost(attentionProjection);
+  const importance = new ProjectionHost(personalImportanceProjection);
   const runtime = new OrionRuntime({
     bus,
     store,
-    projections: [context as ProjectionHost<unknown>, attention as ProjectionHost<unknown>],
+    projections: [
+      context as ProjectionHost<unknown>,
+      attention as ProjectionHost<unknown>,
+      importance as ProjectionHost<unknown>,
+    ],
     logger,
   });
 
@@ -69,7 +77,7 @@ async function boot(): Promise<OrionService> {
     onUsage: (usage) => logger.event(LogEvents.AiInvoked, { ...usage }),
   });
 
-  return { runtime, context, attention, ai, logger };
+  return { runtime, context, attention, importance, ai, logger };
 }
 
 function getService(): Promise<OrionService> {
