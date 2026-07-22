@@ -13,23 +13,44 @@ steps only when you want to read real mail. The design and rationale live in
 
 ## 1. Create a Google OAuth client
 
+> [!NOTE]
+> Google replaced the single "OAuth consent screen" page with the **Google Auth
+> Platform**, which splits those settings across left-nav sections: **Branding**
+> (app name/logo), **Audience** (user type, publishing status, test users),
+> **Data Access** (scopes), and **Clients** (OAuth clients + redirect URIs). The
+> steps below use that layout; older guides that mention one "OAuth consent
+> screen" page are describing the pre-2025 UI.
+
 1. In the [Google Cloud Console](https://console.cloud.google.com/), create (or
    pick) a project.
 2. Enable the **Gmail API** (APIs & Services -> Library -> Gmail API -> Enable).
-3. Configure the **OAuth consent screen** (User type: External is fine for a
-   personal account). Add the scope
-   `https://www.googleapis.com/auth/gmail.readonly`.
-4. Create an **OAuth client ID** of type **Web application**. Under
-   **Authorized redirect URIs**, add exactly:
+3. Open **APIs & Services -> OAuth consent screen** (this now lands on the
+   **Google Auth Platform**). If nothing is configured yet, click **Get started**
+   and complete the short flow (App name + support email, then **Audience**).
+4. **Audience** (left nav): confirm the **User type** — for a personal Gmail
+   account this is **External** (Internal only appears under a Google Workspace
+   org). Publishing status and **Test users** also live here (see below).
+5. **Data Access** (left nav) -> **Add or remove scopes** -> add:
+
+   ```
+   https://www.googleapis.com/auth/gmail.readonly
+   ```
+
+   Save.
+6. **Clients** (left nav) -> **Create client** -> Application type
+   **Web application**. Under **Authorized redirect URIs**, add exactly:
 
    ```
    http://localhost:3000/api/gmail/callback
    ```
 
-   This must match `GOOGLE_OAUTH_REDIRECT_URI` character-for-character.
-5. Copy the **Client ID** and **Client secret**.
+   This must match `GOOGLE_OAUTH_REDIRECT_URI` character-for-character. Save.
+7. Copy the **Client ID** and **Client secret** from the client you just created.
 
 ### Publishing status: Testing vs In production
+
+(Set this under **Audience** in the Google Auth Platform.)
+
 
 While the app is in **Testing**, Google issues refresh tokens that expire after
 7 days and limits you to added test users — you would have to reconnect weekly.
