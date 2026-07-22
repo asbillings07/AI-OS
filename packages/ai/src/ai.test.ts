@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createAi, DeterministicProvider, type AiProvider, type AiUsage } from "./index.js";
+import { createAi, DeterministicProvider, type AiProvider, type AiObservation } from "./index.js";
 
 describe("AI capability layer (ADR-0011)", () => {
   it("defaults to the deterministic, offline provider (no key required)", () => {
@@ -75,13 +75,106 @@ describe("AI capability layer (ADR-0011)", () => {
     expect(summarized.confidence).toBe(1); // clamped from 5
   });
 
-  it("records usage at the chokepoint", async () => {
-    const usage: AiUsage[] = [];
-    const ai = createAi({ provider: new DeterministicProvider(), onUsage: (u) => usage.push(u) });
+  it("records usage at the chokepoint (#80: as a 'miss' request observation)", async () => {
+    const observations: AiObservation[] = [];
+    const ai = createAi({
+      provider: new DeterministicProvider(),
+      env: {},
+      onUsage: (o) => observations.push(o),
+    });
     await ai.summarize({ text: "One sentence here." });
-    expect(usage).toHaveLength(1);
-    expect(usage[0]?.capability).toBe("summarize");
-    expect(usage[0]?.provider).toBe("deterministic");
-    expect(usage[0]?.ok).toBe(true);
+    expect(observations).toHaveLength(1);
+    const [observation] = observations;
+    expect(observation?.kind).toBe("request");
+    if (observation?.kind !== "request") throw new Error("expected a request observation");
+    expect(observation.capability).toBe("summarize");
+    expect(observation.provider).toBe("deterministic");
+    expect(observation.ok).toBe(true);
+    expect(observation.cache).toBe("miss");
+    expect(observation.providerInvoked).toBe(true);
+  });
+
+  describe("caching (#80)", () => {
+    it("is on by default: a second identical call is served from cache with no second provider invocation", async () => {
+      const observations: AiObservation[] = [];
+      const ai = createAi({
+        provider: new DeterministicProvider(),
+        env: {},
+        onUsage: (o) => observations.push(o),
+      });
+      await ai.summarize({ text: "One sentence here." });
+      await ai.summarize({ text: "One sentence here." });
+      expect(observations.map((o) => (o.kind === "request" ? o.cache : o.kind))).toEqual(["miss", "hit"]);
+    });
+
+    it("cache: false disables caching even when ORION_AI_CACHE would otherwise enable it", async () => {
+      let calls = 0;
+      const counting: AiProvider = {
+        name: "counting",
+        async summarize() {
+          calls++;
+          return { summary: "x", confidence: 0.5 };
+        },
+        async classify() {
+          return { label: "a", confidence: 0.5 };
+        },
+      };
+      const ai = createAi({ provider: counting, cache: false, env: { ORION_AI_CACHE: "on" } });
+      await ai.summarize({ text: "same" });
+      await ai.summarize({ text: "same" });
+      expect(calls).toBe(2);
+    });
+
+    it("explicit cache: true wins over ORION_AI_CACHE=off", async () => {
+      let calls = 0;
+      const counting: AiProvider = {
+        name: "counting",
+        async summarize() {
+          calls++;
+          return { summary: "x", confidence: 0.5 };
+        },
+        async classify() {
+          return { label: "a", confidence: 0.5 };
+        },
+      };
+      const ai = createAi({ provider: counting, cache: true, env: { ORION_AI_CACHE: "off" } });
+      await ai.summarize({ text: "same" });
+      await ai.summarize({ text: "same" });
+      expect(calls).toBe(1);
+    });
+
+    it("ORION_AI_CACHE=off disables caching when `cache` is omitted", async () => {
+      let calls = 0;
+      const counting: AiProvider = {
+        name: "counting",
+        async summarize() {
+          calls++;
+          return { summary: "x", confidence: 0.5 };
+        },
+        async classify() {
+          return { label: "a", confidence: 0.5 };
+        },
+      };
+      const ai = createAi({ provider: counting, env: { ORION_AI_CACHE: "off" } });
+      await ai.summarize({ text: "same" });
+      await ai.summarize({ text: "same" });
+      expect(calls).toBe(2);
+    });
+
+    it("still emits `kind: 'request'` observations with no `cache` field when disabled", async () => {
+      const observations: AiObservation[] = [];
+      const ai = createAi({
+        provider: new DeterministicProvider(),
+        cache: false,
+        env: {},
+        onUsage: (o) => observations.push(o),
+      });
+      await ai.summarize({ text: "One sentence here." });
+      expect(observations).toHaveLength(1);
+      const [observation] = observations;
+      expect(observation?.kind).toBe("request");
+      if (observation?.kind !== "request") throw new Error("expected a request observation");
+      expect("cache" in observation).toBe(false);
+    });
   });
 });

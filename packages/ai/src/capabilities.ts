@@ -33,9 +33,18 @@ export interface ClassifyResult {
 export interface AiUsage {
   capability: "summarize" | "classify";
   provider: string;
+  /** Opaque model/version label, mirrors `AiProvider.modelName` (#80). Never a vendor SDK type (Eng #8). */
+  modelName?: string;
   latencyMs: number;
   ok: boolean;
   confidence?: number;
+  /**
+   * Did this call actually reach `AiProvider`? Usually true, but a call can be
+   * rejected before ever calling the provider (e.g. `classify()` with an empty
+   * label set, #80) — `ok: false` alone doesn't distinguish that from a provider
+   * failure, so this is tracked explicitly rather than assumed.
+   */
+  providerInvoked: boolean;
 }
 
 /**
@@ -56,6 +65,13 @@ export interface AiCapabilities {
  */
 export interface AiProvider {
   readonly name: string;
+  /**
+   * Opaque model/version label, for observability and cache-key auditability
+   * (#80) — never the provider SDK's own model type (Eng #8). Deliberately
+   * NOT part of `AiCapabilities`: it stays an internal-adapter detail, not a
+   * capability the rest of Orion can ask for (ADR-0011).
+   */
+  readonly modelName?: string;
   summarize(request: SummarizeRequest): Promise<SummarizeResult>;
   classify(request: ClassifyRequest): Promise<ClassifyResult>;
 }

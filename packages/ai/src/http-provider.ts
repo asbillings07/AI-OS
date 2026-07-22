@@ -29,15 +29,15 @@ interface ChatResponse {
  */
 export class HttpAiProvider implements AiProvider {
   readonly name = "http";
+  readonly modelName: string;
   readonly #apiKey: string;
   readonly #baseUrl: string;
-  readonly #model: string;
   readonly #timeoutMs: number;
 
   constructor(options: HttpAiProviderOptions) {
     this.#apiKey = options.apiKey;
     this.#baseUrl = (options.baseUrl ?? "https://api.openai.com/v1").replace(/\/$/, "");
-    this.#model = options.model ?? "gpt-4o-mini";
+    this.modelName = options.model ?? "gpt-4o-mini";
     this.#timeoutMs = options.timeoutMs ?? 30_000;
   }
 
@@ -69,7 +69,7 @@ export class HttpAiProvider implements AiProvider {
           authorization: `Bearer ${this.#apiKey}`,
         },
         body: JSON.stringify({
-          model: this.#model,
+          model: this.modelName,
           messages: [
             { role: "system", content: system },
             { role: "user", content: user },

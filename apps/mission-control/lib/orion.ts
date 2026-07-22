@@ -22,7 +22,7 @@ import {
   type WorkItemAction,
 } from "@orion/core";
 import { GitHubSkill } from "@orion/github-skill";
-import { createAi, type AiCapabilities } from "@orion/ai";
+import { createAi, type AiCapabilities, type AiObservation } from "@orion/ai";
 import type { GmailIntegrationState } from "@orion/gmail-auth";
 import { getGmailIntegration } from "./gmail-auth";
 import { syncConfiguredGmail, type GmailSyncResult } from "./gmail-sync";
@@ -39,6 +39,19 @@ interface OrionService {
 // Cache the service on globalThis so it survives Next's dev HMR and is shared
 // across requests in the same server process.
 const globalForOrion = globalThis as unknown as { __orion?: Promise<OrionService> };
+
+/**
+ * Route an AI observation (#80) to the structured trace without conflating a
+ * completed request with a cache eviction — they are different moments and
+ * an eviction has no honest latency/ok to report.
+ */
+function logAiObservation(logger: Logger, observation: AiObservation): void {
+  if (observation.kind === "cache_eviction") {
+    logger.event(LogEvents.AiCacheEvicted, { ...observation });
+    return;
+  }
+  logger.event(LogEvents.AiRequestCompleted, { ...observation });
+}
 
 async function boot(): Promise<OrionService> {
   // ORION_DB_PATH lets the CLI tools (bootstrap/reset/rebuild/inspect) operate on
@@ -73,9 +86,10 @@ async function boot(): Promise<OrionService> {
   await new GitHubSkill().ingest(runtime);
 
   // The AI chokepoint reports usage; route it to the same structured trace.
-  const ai = createAi({
-    onUsage: (usage) => logger.event(LogEvents.AiInvoked, { ...usage }),
-  });
+  // Caching is on by default (#80), so most observations are a "hit" that
+  // never reaches the provider — never log an eviction as if it were a
+  // request (fabricated latency/ok would make the trace dishonest).
+  const ai = createAi({ onUsage: (observation: AiObservation) => logAiObservation(logger, observation) });
 
   return { runtime, context, attention, importance, ai, logger };
 }
@@ -118,10 +132,9 @@ export async function readMissionControl(): Promise<MissionControlView> {
     logger,
   });
 
-  // Follow-up (not in v0.1): live-provider summaries are recomputed per render.
-  // Before enabling live AI by default, persist or cache advisory summaries by
-  // immutable source event plus summarization-policy version. Negligible with
-  // the deterministic default; a cost/latency surprise with a real provider.
+  // `ai` caches validated summaries by content (#80), so re-rendering an
+  // unchanged thread never re-invokes a live provider — this loop is cheap
+  // per render regardless of provider.
   const enriched = await Promise.all(
     items.map(async (item): Promise<WorkItem> => {
       // Summaries apply where a conversation body exists — a domain capability
