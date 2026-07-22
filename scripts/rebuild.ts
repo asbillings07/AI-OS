@@ -13,6 +13,7 @@ import {
   SqliteEventStore,
   buildWorkItems,
   contextProjection,
+  attentionProjection,
   createLogger,
 } from "@orion/core";
 import { resolveDbPath } from "./_shared.js";
@@ -28,16 +29,22 @@ async function main(): Promise<void> {
   try {
     const bus = new InProcessEventBus();
     const context = new ProjectionHost(contextProjection);
+    const attention = new ProjectionHost(attentionProjection);
     const logger = createLogger();
     const runtime = new OrionRuntime({
       bus,
       store,
-      projections: [context as ProjectionHost<unknown>],
+      projections: [context as ProjectionHost<unknown>, attention as ProjectionHost<unknown>],
       logger,
     });
 
     await runtime.rebuild();
-    const items = buildWorkItems(context.state, new Date().toISOString(), logger);
+    const items = buildWorkItems({
+      context: context.state,
+      attention: attention.state,
+      now: new Date().toISOString(),
+      logger,
+    });
     console.log(`Replayed ${store.count()} event(s) from ${dbPath}`);
     console.log(`Reconstructed ${Object.keys(context.state.threads).length} thread(s), ${items.length} work item(s).`);
   } finally {

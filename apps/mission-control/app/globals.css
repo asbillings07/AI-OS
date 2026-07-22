@@ -105,6 +105,22 @@ body {
   letter-spacing: -0.01em;
 }
 
+.card__location {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.card__location a {
+  color: var(--ink-soft);
+  text-decoration: none;
+  border-bottom: 1px dotted currentColor;
+}
+
+.card__location a:hover {
+  color: var(--ink);
+}
+
 .card__reason {
   margin: 0 0 10px;
   color: var(--ink-soft);

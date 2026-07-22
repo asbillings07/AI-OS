@@ -10,7 +10,6 @@ import { contextProjection, type ContextState } from "./context.js";
 import { checkSubjectId } from "./subject.js";
 import { detectWorkSignals } from "./work-signals.js";
 import { detectWorkOpportunities } from "./work-opportunities.js";
-import { detectOpportunities, type ThreadOpportunity } from "../opportunity/index.js";
 import { prioritize } from "../prioritization/index.js";
 import { estimateCapacity } from "../capacity/index.js";
 
@@ -166,22 +165,19 @@ describe("Work Opportunity detection (#45)", () => {
   });
 });
 
-describe("the decision layer is type-gated to thread subjects (#45 -> #46)", () => {
-  it("prioritize cannot consume a non-thread Opportunity", () => {
+describe("the decision layer now consumes every Opportunity kind (#46)", () => {
+  it("ranks a GitHub review Opportunity into a Subject-based Work Item", () => {
     const context = contextOf([reviewEvent("r1")]);
     const [review] = detectWorkOpportunities(context, NOW);
     expect(review?.kind).toBe("ReviewNeeded");
-    expect(review?.subject.kind).not.toBe("thread");
+    expect(review?.subject.kind).toBe("review");
 
-    // Compile-time proof that GitHub work structurally cannot enter Work Items
-    // until #46: a ReviewNeeded is not assignable to the prioritizer's input.
-    // @ts-expect-error — a ReviewNeeded Opportunity is not a ThreadOpportunity.
-    const gated: readonly ThreadOpportunity[] = [review!];
-    void gated;
-
-    // The legitimate feed (the thread detector) emits nothing for GitHub-only
-    // Context, so the prioritizer produces no Work Items.
-    const items = prioritize(detectOpportunities(context, NOW), estimateCapacity(NOW, context));
-    expect(items).toEqual([]);
+    // #45's type gate is gone: prioritize accepts any Opportunity kind. A review
+    // becomes a Work Item whose id and subject are source-neutral (not a threadId).
+    const items = prioritize(detectWorkOpportunities(context, NOW), estimateCapacity(NOW, { activeWorkCount: 1 }));
+    expect(items).toHaveLength(1);
+    expect(items[0]?.kind).toBe("ReviewNeeded");
+    expect(items[0]?.subject).toEqual({ kind: "review", id: "acme/orion#128" });
+    expect(items[0]?.id).toBe("wi-review:acme/orion#128");
   });
 });

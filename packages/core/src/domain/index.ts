@@ -1,4 +1,5 @@
 import type { EventEnvelope } from "../events/index.js";
+import type { SubjectRef } from "../subject/index.js";
 
 /**
  * Domain event vocabulary. These names are domain-centric on purpose: nothing
@@ -128,15 +129,44 @@ export interface CheckFailedPayload {
   failedAt: string;
 }
 
-export interface WorkItemActionPayload {
-  workItemId: string;
-  /** The conversation the Work Item was about, so Context can react. */
-  threadId: string;
-  note?: string;
+/**
+ * A user's decision on a Work Item. Modeled as a union so both the current
+ * Subject-based shape and the pre-#46 thread-only shape are representable and
+ * type-safe on the same append-only log:
+ *
+ *  - Current: the action targets a source-neutral Subject and records exactly the
+ *    revision the user saw (`basisEventIds`), so a genuinely new occurrence can
+ *    resurface the item while a late-arriving older fact stays quiet. The server
+ *    derives `basisEventIds` from the surfaced Work Item, so it is always nonempty.
+ *  - Legacy: pre-#46 events carried only `threadId` and no basis. Kept so old logs
+ *    replay faithfully (see attention/projection.ts for the compatibility rules).
+ */
+export interface CurrentWorkItemActionPayload {
+  readonly workItemId: string;
+  readonly subject: SubjectRef;
+  /** The occurrence Event ids the surfaced Work Item was based on (nonempty). */
+  readonly basisEventIds: readonly string[];
+  readonly note?: string;
 }
 
-export interface WorkItemSnoozePayload extends WorkItemActionPayload {
-  snoozedUntil: string;
+/** Pre-#46 action payload: thread-only, no Subject, no basis. */
+export interface LegacyThreadActionPayload {
+  readonly workItemId: string;
+  readonly threadId: string;
+  readonly note?: string;
+}
+
+export type WorkItemActionPayload = CurrentWorkItemActionPayload | LegacyThreadActionPayload;
+
+export type WorkItemSnoozePayload =
+  | (CurrentWorkItemActionPayload & { readonly snoozedUntil: string })
+  | (LegacyThreadActionPayload & { readonly snoozedUntil: string });
+
+/** Narrows an action payload to the current Subject-based shape. */
+export function isCurrentActionPayload(
+  payload: WorkItemActionPayload,
+): payload is CurrentWorkItemActionPayload {
+  return "subject" in payload;
 }
 
 export type MessageReceivedEvent = EventEnvelope<"MessageReceived", MessageReceivedPayload>;

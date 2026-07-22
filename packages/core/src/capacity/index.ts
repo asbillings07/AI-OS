@@ -1,18 +1,27 @@
-import type { ContextState } from "../understanding/context.js";
-
 /**
  * Capacity (ubiquitous language): Orion's current estimate of how effectively
  * the user can make progress *right now*. It answers *"can the user act well
  * right now?"* — a property of the user, independent of any Opportunity's value.
  *
  * Capacity is the *estimate*, not the evidence. v0.1 infers it from two coarse,
- * deterministic signals (time of day and current open load); richer evidence
+ * deterministic signals (time of day and current load); richer evidence
  * (focus depth, interruption risk, device, connectivity) is deferred (Eng #9).
  */
 export interface Capacity {
   /** 0..1 — higher means better able to act well now. */
   level: number;
   evidence: string[];
+}
+
+/**
+ * Source-neutral load input. `activeWorkCount` is **attention demand** — the
+ * number of Work Items Orion is currently asking the user to consider — NOT
+ * everything unresolved in the outside world. Dismissed/snoozed items don't count
+ * while hidden and re-enter load when they resurface. Capacity does not know that
+ * work happens to be stored as email threads, reviews, or checks.
+ */
+export interface CapacityLoad {
+  readonly activeWorkCount: number;
 }
 
 /** Rough time-of-day suitability for focused work (UTC-based, deterministic). */
@@ -27,22 +36,26 @@ function timeOfDayScore(hourUtc: number): { score: number; note: string } {
 }
 
 /**
- * Estimate Capacity. Deterministic given `now`. Optional Context lets a heavy
- * open load lower Capacity — it is harder to act well when many things are open.
+ * Estimate Capacity. Deterministic given `now`. Optional load lets a heavy
+ * attention demand lower Capacity — it is harder to act well when Orion is asking
+ * you to consider many things at once.
+ *
+ * Thresholds are tuned for *visible attention demand* (a smaller population than
+ * "all open conversations" was): heavy at >= 4, light at <= 1.
  */
-export function estimateCapacity(now: string, context?: ContextState): Capacity {
+export function estimateCapacity(now: string, load?: CapacityLoad): Capacity {
   const hourUtc = new Date(now).getUTCHours();
   const time = timeOfDayScore(hourUtc);
   const evidence = [time.note];
 
   let level = time.score;
 
-  if (context) {
-    const openThreads = Object.values(context.threads).filter((thread) => thread.status === "open").length;
-    if (openThreads >= 6) {
+  if (load) {
+    const { activeWorkCount } = load;
+    if (activeWorkCount >= 4) {
       level -= 0.25;
-      evidence.push(`Heavy current load (${openThreads} open conversations).`);
-    } else if (openThreads <= 2) {
+      evidence.push(`Heavy current load (${activeWorkCount} things need you).`);
+    } else if (activeWorkCount <= 1) {
       level += 0.1;
       evidence.push("Light current load.");
     }

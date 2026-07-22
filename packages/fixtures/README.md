@@ -32,11 +32,14 @@ Notes:
   surfaces things.
 - **`th-gh-review-128` + `gh-rev-128` are a real correlation pair.** The email
   notification and the GitHub `ReviewRequested` fact describe the *same*
-  underlying review on `acme/orion#128`. In #44 the email remains silent while
-  the GitHub Skill records the direct `ReviewRequested` fact; nothing surfaces
-  yet, since GitHub understanding and Work Items are deferred to #45. Once GitHub
-  understanding is added, #46 must ensure both representations produce only one
-  Work Item.
+  underlying review on `acme/orion#128`. As of #46 the GitHub side surfaces as a
+  Work Item and the email stays silent — but for a *coincidental* reason
+  (automated senders raise `LikelyLowValue`, never `ReplyNeeded`), **not** because
+  Orion recognizes the two facts as the same occurrence. True cross-source
+  de-duplication (collapsing correlated facts into one Work Item even when the
+  duplicate is *not* an automated email) remains follow-up; the Subject-keyed,
+  revision-scoped Attention seam added in #46 ([ADR-0012](../../docs/adr/0012-attention-is-a-projection-distinct-from-context.md))
+  is where that policy will attach.
 - The exact bands depend on Capacity (time of day) and the prioritization
   weights; the catalog describes intent, and the tests pin the specifics.
 
@@ -65,8 +68,8 @@ Notes:
   / `CheckFailed` never mention pull requests, issues, or workflows — those words
   stop at this file and the Skill (Eng #8).
 - **`acme/orion`** is the same project referenced by the Gmail `th-gh`
-  notification above; together they set up the cross-source correlation work in
-  #46.
+  notification above; together they remain the fixture for cross-source
+  correlation, which #46 set the stage for but deliberately left as follow-up.
 - In #44 these land on the same log as Gmail but produce **no Context and no Work
   Items** — the core has no GitHub interpretation yet (that is #45).
 

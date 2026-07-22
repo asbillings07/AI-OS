@@ -1,6 +1,6 @@
 import type { ContextState } from "../understanding/context.js";
 import { detectSignals, type Signal } from "../understanding/signals.js";
-import { subjectKey, type SubjectRef } from "../understanding/subject.js";
+import { subjectKey, type SubjectRef } from "../subject/index.js";
 
 /**
  * An Opportunity (ubiquitous language): a proactively detected situation worth
@@ -19,13 +19,26 @@ export interface OpportunityBase<TKind extends string, TSubject extends SubjectR
   readonly subject: TSubject;
   /** Display title for this Opportunity's subject (carried, not looked up later). */
   readonly title: string;
+  /** Optional human-readable location for display, e.g. "acme/orion#128". */
+  readonly location?: string;
+  /** Optional canonical link for display. */
+  readonly url?: string;
   /** 0..1 — how much value there is in acting. Not a priority. */
   readonly value: number;
   /** The Signals this Opportunity was derived from. */
   readonly signals: readonly Signal[];
   /** Human-readable reasons, carried from the Signals for later Explanation. */
   readonly evidence: readonly string[];
+  /** Full provenance: every Event that ever contributed to this Opportunity. */
   readonly createdFromEventIds: readonly string[];
+  /**
+   * The *current presentation revision* — the occurrence(s) that define what the
+   * user is being shown right now. Distinct from `createdFromEventIds` (full
+   * history): a user action is scoped to this basis, so a newer occurrence
+   * resurfaces the item while a late-arriving older fact (which grows provenance
+   * but not the revision) does not. See attention/visibility.ts.
+   */
+  readonly attentionBasisEventIds: readonly string[];
 }
 
 export type Opportunity =
@@ -34,7 +47,7 @@ export type Opportunity =
   | OpportunityBase<"AssignedActionNeeded", { readonly kind: "assignment"; readonly id: string }>
   | OpportunityBase<"RiskDetected", { readonly kind: "check"; readonly id: string }>;
 
-/** The subset the (still email-shaped) decision layer can consume. See prioritize(). */
+/** The conversation subset of Opportunity. See detectOpportunities(). */
 export type ThreadOpportunity = Extract<Opportunity, { subject: { kind: "thread" } }>;
 
 function groupBySubject(signals: Signal[]): Map<string, Signal[]> {
@@ -49,14 +62,15 @@ function groupBySubject(signals: Signal[]): Map<string, Signal[]> {
 }
 
 /**
- * Derive thread (email) Opportunities from Context. Deterministic given `now`. A
- * thread yields a ReplyNeeded Opportunity only if it is actually awaiting a
- * reply; automated / low-value threads (which carry no AwaitingReply Signal)
+ * Derive conversation (thread) Opportunities from Context. Deterministic given
+ * `now`. A thread yields a ReplyNeeded Opportunity only if it is actually awaiting
+ * a reply; automated / low-value threads (which carry no AwaitingReply Signal)
  * yield nothing — silence is a valid output.
  *
- * Returns `ThreadOpportunity[]` on purpose: the decision layer is type-gated to
- * thread subjects until #46, so this feeds it directly. GitHub work is derived
- * separately (see understanding/work-opportunities.ts) and cannot flow here.
+ * This is one of two detectors; collaborative-work Opportunities (reviews,
+ * assignments, checks) are derived separately in
+ * understanding/work-opportunities.ts. buildWorkItems() composes both into one
+ * source-neutral ranked list (#46).
  */
 export function detectOpportunities(context: ContextState, now: string): ThreadOpportunity[] {
   const signals = detectSignals(context, now);
@@ -80,6 +94,13 @@ export function detectOpportunities(context: ContextState, now: string): ThreadO
     const threadId = awaiting.subject.id;
     const thread = context.threads[threadId];
 
+    // The attention revision for a conversation is its newest inbound message by
+    // occurrence time (Context's `latestMessageEventId`, never the last appended
+    // element): a genuinely new reply changes what the user sees and should
+    // resurface a handled thread, whereas a backfilled older message must not.
+    const latestMessageEventId = thread?.latestMessageEventId;
+    const attentionBasisEventIds = latestMessageEventId ? [latestMessageEventId] : sourceEventIds;
+
     opportunities.push({
       kind: "ReplyNeeded",
       subject: { kind: "thread", id: threadId },
@@ -88,6 +109,7 @@ export function detectOpportunities(context: ContextState, now: string): ThreadO
       signals: threadSignals,
       evidence: threadSignals.map((signal) => signal.evidence),
       createdFromEventIds: sourceEventIds,
+      attentionBasisEventIds,
     });
   }
 

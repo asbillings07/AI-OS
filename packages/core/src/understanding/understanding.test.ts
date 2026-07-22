@@ -80,7 +80,7 @@ describe("Signal detection (deterministic)", () => {
     expect(kinds).toEqual(["LikelyLowValue"]);
   });
 
-  it("produces no Signals for handled threads", () => {
+  it("still produces Signals for a handled thread — suppression is Attention's job now (#46)", () => {
     const received = message({ threadId: "t1", messageId: "m1" });
     const acted = makeEvent({
       type: EventTypes.WorkItemActedOn,
@@ -91,7 +91,11 @@ describe("Signal detection (deterministic)", () => {
       (state, event) => contextProjection.apply(state, event),
       contextProjection.init(),
     );
-    expect(detectSignals(context, "2026-07-16T12:00:00.000Z")).toHaveLength(0);
+    // Signals describe reality; whether the user has handled the thread is a
+    // presentation decision made later at the visibility stage (see attention.test.ts).
+    expect(detectSignals(context, "2026-07-16T12:00:00.000Z").map((s) => s.kind)).toContain(
+      "AwaitingReply",
+    );
   });
 
   it("reopens a handled thread when a new inbound message arrives", () => {
@@ -114,7 +118,7 @@ describe("Signal detection (deterministic)", () => {
     );
   });
 
-  it("keeps a dismissed thread muted even when a new message arrives (durable mute)", () => {
+  it("records a legacy dismissal on Context status but still emits reality Signals (#46)", () => {
     const events = [
       message({ threadId: "t1", messageId: "m1" }),
       makeEvent({
@@ -128,8 +132,14 @@ describe("Signal detection (deterministic)", () => {
       (state, event) => contextProjection.apply(state, event),
       contextProjection.init(),
     );
+    // Legacy status is still replayed for byte-identical rebuilds (dismissed is a
+    // durable mute Context keeps even when the conversation continues)...
     expect(context.threads.t1?.status).toBe("dismissed");
-    expect(detectSignals(context, "2026-07-16T12:00:00.000Z")).toHaveLength(0);
+    // ...but Signals no longer read status; the durable-mute semantics live in the
+    // Attention layer (see attention.test.ts, legacy-subject dispositions).
+    expect(detectSignals(context, "2026-07-16T12:00:00.000Z").map((s) => s.kind)).toContain(
+      "AwaitingReply",
+    );
   });
 
   it("clears snoozedUntil when a snoozed thread transitions to another status", () => {
@@ -154,7 +164,7 @@ describe("Signal detection (deterministic)", () => {
     expect(context.threads.t1?.snoozedUntil).toBeUndefined();
   });
 
-  it("keeps a snoozed thread silent until snoozedUntil, then lets it resurface", () => {
+  it("emits Signals for a snoozed thread regardless of the snooze window (#46)", () => {
     const received = message({ threadId: "t1", messageId: "m1" });
     const snoozed = makeEvent({
       type: EventTypes.WorkItemSnoozed,
@@ -166,9 +176,11 @@ describe("Signal detection (deterministic)", () => {
       contextProjection.init(),
     );
 
-    // Still inside the snooze window: silent.
-    expect(detectSignals(context, "2026-07-15T18:00:00.000Z")).toHaveLength(0);
-    // Past the snooze window: resurfaces as a normal actionable thread.
+    // Reality is the same inside and outside the snooze window; the window only
+    // governs *visibility*, which the Attention layer applies (see attention.test.ts).
+    expect(detectSignals(context, "2026-07-15T18:00:00.000Z").map((s) => s.kind)).toContain(
+      "AwaitingReply",
+    );
     expect(detectSignals(context, "2026-07-16T10:00:00.000Z").map((s) => s.kind)).toContain(
       "AwaitingReply",
     );
