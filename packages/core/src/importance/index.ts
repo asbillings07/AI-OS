@@ -37,9 +37,12 @@ export interface OriginatorImportance {
    */
   readonly lastActionAt?: string;
   /**
-   * The acted/dismissed action-Event ids that moved this score — importance
-   * provenance, exposed on the Work Item separately from `attentionBasisEventIds`
-   * (which is the presentation revision). Snoozes are excluded: they never score.
+   * A bounded window of the most recent acted/dismissed action-Event ids that
+   * moved this score (see `MAX_IMPORTANCE_EVIDENCE_IDS`) — recent, representative
+   * importance provenance, NOT the complete history (`acted`/`dismissed` above
+   * are the exact, unbounded counts; the Event log remains the complete record).
+   * Exposed on the Work Item separately from `attentionBasisEventIds` (which is
+   * the presentation revision). Snoozes are excluded: they never score.
    */
   readonly evidenceEventIds: readonly string[];
 }
@@ -51,6 +54,16 @@ export interface PersonalImportanceState {
 
 /** Neutral score: no evidence either way. */
 export const NEUTRAL_IMPORTANCE = 0.5;
+
+/**
+ * The most recent decisive action-Event ids retained per originator as
+ * provenance. `acted`/`dismissed` stay exact and unbounded (they are what the
+ * score is computed from); this bound exists only so `evidenceEventIds` — copied
+ * onto every active Work Item from a frequently-encountered originator — cannot
+ * grow the projection or a render's payload without bound. The Event log remains
+ * the complete, authoritative history regardless of this window.
+ */
+export const MAX_IMPORTANCE_EVIDENCE_IDS = 20;
 
 function emptyImportance(): PersonalImportanceState {
   return { byOriginator: {} };
@@ -89,10 +102,16 @@ export function importanceFor(
   return entry ? importanceScore(entry) : NEUTRAL_IMPORTANCE;
 }
 
+interface ResolvedOriginator {
+  readonly originator: OriginatorRef;
+  /** Human-readable name for explanation only; never part of the identity key. */
+  readonly displayName: string;
+}
+
 /**
- * Resolve who a Subject's current revision is *from*, as a source-neutral
- * `OriginatorRef`, or `null` when there is no meaningful originator (a failing
- * check has no person; an unknown subject resolves to nothing -> neutral).
+ * Resolve who a Subject's current revision is *from* — the shared lookup behind
+ * both `originatorFor` (identity) and `importanceContributionFor` (identity +
+ * score + display name), so the Subject-kind switch exists in exactly one place.
  *
  * The namespace always comes from the winning occurrence's stored `source`, never
  * from `Subject.kind`: a thread is not always Gmail, an assignment not always
@@ -100,23 +119,32 @@ export function importanceFor(
  * time (`latestThreadMessage`), so a late-arriving older message never restamps a
  * thread's originator, while a genuinely new sender does for the new revision.
  */
-export function originatorFor(subject: SubjectRef, context: ContextState): OriginatorRef | null {
+function resolveOriginator(subject: SubjectRef, context: ContextState): ResolvedOriginator | null {
   switch (subject.kind) {
     case "thread": {
       const thread = context.threads[subject.id];
       const message = thread ? latestThreadMessage(thread) : undefined;
       if (!message) return null;
-      return { namespace: message.source, id: message.from.address };
+      return {
+        originator: { namespace: message.source, id: message.from.address },
+        displayName: message.from.name ?? message.from.address,
+      };
     }
     case "review": {
       const review = context.reviews[subject.id];
       if (!review?.requestedBy) return null;
-      return { namespace: review.latestSource, id: review.requestedBy.externalId };
+      return {
+        originator: { namespace: review.latestSource, id: review.requestedBy.externalId },
+        displayName: review.requestedBy.displayName ?? review.requestedBy.externalId,
+      };
     }
     case "assignment": {
       const assignment = context.assignments[subject.id];
       if (!assignment?.assignedBy) return null;
-      return { namespace: assignment.latestSource, id: assignment.assignedBy.externalId };
+      return {
+        originator: { namespace: assignment.latestSource, id: assignment.assignedBy.externalId },
+        displayName: assignment.assignedBy.displayName ?? assignment.assignedBy.externalId,
+      };
     }
     case "check":
       // An automated check has no originating person; importance stays neutral.
@@ -124,6 +152,61 @@ export function originatorFor(subject: SubjectRef, context: ContextState): Origi
     default:
       return null;
   }
+}
+
+/**
+ * Resolve who a Subject's current revision is *from*, as a source-neutral
+ * `OriginatorRef`, or `null` when there is no meaningful originator (a failing
+ * check has no person; an unknown subject resolves to nothing -> neutral).
+ */
+export function originatorFor(subject: SubjectRef, context: ContextState): OriginatorRef | null {
+  return resolveOriginator(subject, context)?.originator ?? null;
+}
+
+/** The Context-independent input `prioritize()` receives for one Work Item. */
+export interface ImportanceContribution {
+  /** The learned score in `[0,1]`; `0.5` = neutral. */
+  readonly score: number;
+  /**
+   * A bounded window of recent, representative action-Event ids backing this
+   * score (empty if neutral) — see `MAX_IMPORTANCE_EVIDENCE_IDS`, not the
+   * complete history.
+   */
+  readonly evidenceEventIds: readonly string[];
+  /** Human-readable originator name, for explanation only. */
+  readonly originatorName: string;
+}
+
+/**
+ * The numeric Personal Importance contribution for one Subject's *current*
+ * revision — the score, its evidence provenance, and a display name for
+ * explanation — or `null` when there is no meaningful originator (ranking then
+ * simply omits the term, equivalent to neutral).
+ *
+ * This is the ONLY function that touches both Context and `PersonalImportanceState`;
+ * its result is plain, serializable data, which is what lets `prioritize()` stay
+ * independent of Context (#65) — it receives this contribution, never Context or
+ * the importance state itself.
+ */
+export function importanceContributionFor(
+  subject: SubjectRef,
+  context: ContextState,
+  state: PersonalImportanceState,
+): ImportanceContribution | null {
+  const resolved = resolveOriginator(subject, context);
+  if (!resolved) return null;
+  const entry = state.byOriginator[originatorKey(resolved.originator)];
+  const score = entry ? importanceScore(entry) : NEUTRAL_IMPORTANCE;
+  // Evidence is provenance for a score that actually moved ranking. Below the
+  // two-decisive-action threshold, and at an exact acted/dismissed balance, the
+  // score stays neutral even though `entry` (and its ids) exists — that history
+  // must not leak out as if it justified something (the interface promises
+  // "empty if neutral").
+  return {
+    score,
+    evidenceEventIds: entry && score !== NEUTRAL_IMPORTANCE ? entry.evidenceEventIds : [],
+    originatorName: resolved.displayName,
+  };
 }
 
 const CATEGORY_FOR_TYPE: Record<string, "acted" | "dismissed" | "snoozed"> = {
@@ -153,7 +236,7 @@ function applyDisposition(
     snoozed: existing.snoozed + (category === "snoozed" ? 1 : 0),
     lastActionAt: isDecisive ? event.occurredAt : existing.lastActionAt,
     evidenceEventIds: isDecisive
-      ? [...existing.evidenceEventIds, event.id]
+      ? [...existing.evidenceEventIds, event.id].slice(-MAX_IMPORTANCE_EVIDENCE_IDS)
       : existing.evidenceEventIds,
   };
 

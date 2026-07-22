@@ -106,11 +106,17 @@ export interface MissionControlView {
  * `gmailSync` and never substitutes fixtures.
  */
 export async function readMissionControl(): Promise<MissionControlView> {
-  const { context, attention, ai, logger, runtime } = await getService();
+  const { context, attention, importance, ai, logger, runtime } = await getService();
   const gmailSync = await syncConfiguredGmail(runtime, logger);
   const gmail = await getGmailIntegration().state();
   const now = new Date().toISOString();
-  const items = buildWorkItems({ context: context.state, attention: attention.state, now, logger });
+  const items = buildWorkItems({
+    context: context.state,
+    attention: attention.state,
+    importance: importance.state,
+    now,
+    logger,
+  });
 
   // Follow-up (not in v0.1): live-provider summaries are recomputed per render.
   // Before enabling live AI by default, persist or cache advisory summaries by
@@ -179,12 +185,13 @@ export async function recordAction(
   action: WorkItemAction,
   revision: string,
 ): Promise<boolean> {
-  const { runtime, context, attention, logger } = await getService();
+  const { runtime, context, attention, importance, logger } = await getService();
 
   const recorded = await runtime.recordExclusive(() =>
     buildActionEvent({
       context: context.state,
       attention: attention.state,
+      importance: importance.state,
       now: new Date().toISOString(),
       workItemId,
       action,

@@ -6,7 +6,7 @@ import type { Logger } from "../observability/index.js";
 import type { ContextState } from "../understanding/index.js";
 import type { AttentionState } from "../attention/index.js";
 import { buildWorkItems } from "../prioritization/index.js";
-import { originatorFor } from "../importance/index.js";
+import { originatorFor, type PersonalImportanceState } from "../importance/index.js";
 
 /**
  * Turning a user's decision on a surfaced Work Item into a recorded Event.
@@ -70,6 +70,8 @@ export function actionEventId(input: ActionEventIdInput): string {
 export interface BuildActionEventInput {
   readonly context: ContextState;
   readonly attention: AttentionState;
+  /** Passed through to the re-resolve `buildWorkItems` call below (#65). */
+  readonly importance?: PersonalImportanceState;
   readonly now: string;
   readonly workItemId: string;
   readonly action: WorkItemAction;
@@ -93,7 +95,7 @@ export interface BuildActionEventInput {
  * critical section.
  */
 export function buildActionEvent(input: BuildActionEventInput): EventEnvelope | null {
-  const { context, attention, now, workItemId, action, revision } = input;
+  const { context, attention, importance, now, workItemId, action, revision } = input;
 
   // Trust boundary: this is exported, so guard the action at runtime rather than
   // relying on the caller's compile-time type. An unsupported action records
@@ -102,7 +104,7 @@ export function buildActionEvent(input: BuildActionEventInput): EventEnvelope | 
     return null;
   }
 
-  const surfaced = buildWorkItems({ context, attention, now, logger: input.logger }).find(
+  const surfaced = buildWorkItems({ context, attention, importance, now, logger: input.logger }).find(
     (item) => item.id === workItemId,
   );
 

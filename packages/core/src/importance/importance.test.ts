@@ -11,10 +11,12 @@ import {
 } from "../domain/index.js";
 import { contextProjection, type ContextState } from "../understanding/context.js";
 import {
+  importanceContributionFor,
   importanceFor,
   importanceScore,
   originatorFor,
   personalImportanceProjection,
+  MAX_IMPORTANCE_EVIDENCE_IDS,
   NEUTRAL_IMPORTANCE,
   type PersonalImportanceState,
 } from "./index.js";
@@ -316,6 +318,54 @@ describe("personalImportanceProjection: folding (#65)", () => {
     expect(importanceFor(state, github)).toBeCloseTo(0.25, 10);
   });
 
+  it("keeps exact acted/dismissed counts but bounds evidenceEventIds to a recent window", async () => {
+    // 25 decisive actions, alternating direction so the exact count still tells a
+    // clean story: 13 acted, 12 dismissed.
+    const events = Array.from({ length: 25 }, (_, i) =>
+      action(i % 2 === 0 ? EventTypes.WorkItemActedOn : EventTypes.WorkItemDismissed, `act-${i + 1}`, DANA),
+    );
+
+    const state = foldImportance(events);
+    const entry = state.byOriginator[originatorKey(DANA)]!;
+
+    // The exact counts (what the score is computed from) are unbounded and correct.
+    expect(entry.acted).toBe(13);
+    expect(entry.dismissed).toBe(12);
+    expect(importanceFor(state, DANA)).toBeCloseTo(importanceScore({ acted: 13, dismissed: 12 }), 10);
+
+    // Only the most recent MAX_IMPORTANCE_EVIDENCE_IDS ids survive as provenance.
+    expect(entry.evidenceEventIds).toHaveLength(MAX_IMPORTANCE_EVIDENCE_IDS);
+    const expectedIds = events.slice(-MAX_IMPORTANCE_EVIDENCE_IDS).map((e) => e.id);
+    expect(entry.evidenceEventIds).toEqual(expectedIds);
+
+    // A rebuild through a real runtime produces the identical bounded window, not
+    // just a re-fold — proving the bound survives replay (ADR-0009).
+    const store = new SqliteEventStore(":memory:");
+    try {
+      const liveHost = new ProjectionHost(personalImportanceProjection);
+      const liveRuntime = new OrionRuntime({
+        bus: new InProcessEventBus(),
+        store,
+        projections: [liveHost as ProjectionHost<unknown>],
+      });
+      for (const event of events) await liveRuntime.record(event);
+      const live = structuredClone(liveHost.state);
+
+      const rebuiltHost = new ProjectionHost(personalImportanceProjection);
+      const rebuildRuntime = new OrionRuntime({
+        bus: new InProcessEventBus(),
+        store,
+        projections: [rebuiltHost as ProjectionHost<unknown>],
+      });
+      await rebuildRuntime.rebuild();
+
+      expect(rebuiltHost.state).toEqual(live);
+      expect(rebuiltHost.state.byOriginator[originatorKey(DANA)]!.evidenceEventIds).toEqual(expectedIds);
+    } finally {
+      store.close();
+    }
+  });
+
   it("rebuilds an identical live state purely by replaying the log (ADR-0009)", async () => {
     const store = new SqliteEventStore(":memory:");
     try {
@@ -359,5 +409,53 @@ describe("personalImportanceProjection: folding (#65)", () => {
     ];
     const state = foldImportance([...history(gmail, "g"), ...history(github, "h")]);
     expect(importanceFor(state, gmail)).toBe(importanceFor(state, github));
+  });
+});
+
+// --- importanceContributionFor: the plain data prioritize() actually sees -----
+
+describe("importanceContributionFor: evidence only when the score is off-neutral (#65)", () => {
+  const context = contextFrom([message("m1", "t1", "2026-07-15T12:00:00.000Z", "dana@acme.com")]);
+  const subject = { kind: "thread" as const, id: "t1" };
+
+  it("is neutral with empty evidence when the originator has no history at all", () => {
+    const contribution = importanceContributionFor(subject, context, personalImportanceProjection.init());
+    expect(contribution).toMatchObject({ score: NEUTRAL_IMPORTANCE, evidenceEventIds: [] });
+  });
+
+  it("stays neutral with empty evidence below the two-decisive-action threshold (sparse history)", () => {
+    // One acted Event exists (and is recorded on the entry), but a single decisive
+    // action must not move the score, and the below-threshold entry must not leak
+    // out as evidence for a score that never actually moved.
+    const state = foldImportance([action(EventTypes.WorkItemActedOn, "act-1", DANA)]);
+    const contribution = importanceContributionFor(subject, context, state);
+    expect(contribution).toMatchObject({ score: NEUTRAL_IMPORTANCE, evidenceEventIds: [] });
+  });
+
+  it("stays neutral with empty evidence at an exact acted/dismissed balance", () => {
+    // Two decisive actions exist (clearing the threshold) but they cancel out to
+    // exactly neutral; the entry's evidence ids must still not be exposed.
+    const state = foldImportance([
+      action(EventTypes.WorkItemActedOn, "act-1", DANA),
+      action(EventTypes.WorkItemDismissed, "act-2", DANA),
+    ]);
+    const contribution = importanceContributionFor(subject, context, state);
+    expect(contribution).toMatchObject({ score: NEUTRAL_IMPORTANCE, evidenceEventIds: [] });
+  });
+
+  it("exposes the exact evidence ids once the score is genuinely off-neutral", () => {
+    const state = foldImportance([
+      action(EventTypes.WorkItemActedOn, "act-1", DANA),
+      action(EventTypes.WorkItemActedOn, "act-2", DANA),
+    ]);
+    const contribution = importanceContributionFor(subject, context, state);
+    expect(contribution?.score).toBeCloseTo(0.75, 10);
+    expect(contribution?.evidenceEventIds).toEqual(["act-1", "act-2"]);
+  });
+
+  it("returns null (no contribution at all) when there is no meaningful originator", () => {
+    const checkContext = contextFrom([]);
+    const contribution = importanceContributionFor({ kind: "check", id: "x" }, checkContext, personalImportanceProjection.init());
+    expect(contribution).toBeNull();
   });
 });

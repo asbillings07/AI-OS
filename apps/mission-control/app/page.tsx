@@ -155,7 +155,8 @@ function Card({ item, muted }: { item: WorkItem; muted?: boolean }) {
         <p className="why__trace">
           Traces to {item.createdFromEventIds.length} event(s). Opportunity{" "}
           {item.opportunity.toFixed(2)} · Urgency {item.urgency.toFixed(2)} · Commitment{" "}
-          {item.commitment.toFixed(2)} · Capacity {item.capacity.toFixed(2)}.
+          {item.commitment.toFixed(2)} · Capacity {item.capacity.toFixed(2)} · Importance{" "}
+          {item.importance.toFixed(2)}.
         </p>
       </details>
 
