@@ -34,9 +34,19 @@ function defaultCredentialsDbPath(): string {
 }
 
 export function readGmailConfig(env: Env = process.env): GmailConfig {
-  const mode: GmailMode = env.ORION_GMAIL_SOURCE === "live" ? "live" : "fixture";
-  if (mode === "fixture") {
+  const source = env.ORION_GMAIL_SOURCE?.trim();
+
+  // Unset (or empty) and "fixture" mean fixtures. Anything else is reported as
+  // misconfigured — an unrecognized value must never silently select fixtures.
+  if (!source || source === "fixture") {
     return { mode: "fixture" };
+  }
+  if (source !== "live") {
+    return {
+      mode: "live",
+      live: null,
+      issues: [`ORION_GMAIL_SOURCE must be "fixture" or "live" (got "${source}").`],
+    };
   }
 
   const issues: string[] = [];

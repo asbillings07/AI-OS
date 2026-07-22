@@ -40,6 +40,7 @@ export const LogEvents = {
   WorkItemRanked: "workitem.ranked",
   UserActionRecorded: "user.action.recorded",
   AiInvoked: "ai.invoked",
+  GmailCredentialPersistFailed: "gmail.credential.persist_failed",
 } as const;
 
 /** A logger that does nothing. The default everywhere, so logging is opt-in. */

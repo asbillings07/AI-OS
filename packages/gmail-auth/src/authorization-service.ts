@@ -53,6 +53,8 @@ export interface GoogleAuthorizationServiceOptions {
   /** Injectable for tests: create the OAuth client and fetch the profile. */
   readonly clientFactory?: () => OAuth2Client;
   readonly fetchImpl?: typeof fetch;
+  /** Where a background refresh-token persistence failure is reported. */
+  readonly onError?: (error: unknown) => void;
 }
 
 /**
@@ -67,11 +69,18 @@ export class GoogleAuthorizationService implements AccessTokenProvider {
   readonly #config: GmailLiveConfig;
   readonly #clientFactory: () => OAuth2Client;
   readonly #fetch: typeof fetch;
+  readonly #onError: (error: unknown) => void;
+  // One OAuth client per stored refresh token, reused across renders so the
+  // access token is exchanged only when it actually expires.
+  #cachedClient: { refreshToken: string; client: OAuth2Client } | null = null;
+  // Serializes background refresh-token persistence so it can be awaited/observed.
+  #pendingPersist: Promise<void> = Promise.resolve();
 
   constructor(options: GoogleAuthorizationServiceOptions) {
     this.#store = options.store;
     this.#config = options.config;
     this.#fetch = options.fetchImpl ?? fetch;
+    this.#onError = options.onError ?? (() => {});
     this.#clientFactory =
       options.clientFactory ??
       (() =>
@@ -121,16 +130,18 @@ export class GoogleAuthorizationService implements AccessTokenProvider {
       );
     }
 
-    const grantedScopes = (tokens.scope ?? "").split(" ").filter(Boolean);
-    if (!grantedScopes.includes(GMAIL_READONLY_SCOPE)) {
-      await this.#revokeQuietly(client, refreshToken);
-      throw new CallbackRejectedError("The gmail.readonly scope was not granted.");
-    }
-
     const accessToken = tokens.access_token;
     if (!accessToken) {
       await this.#revokeQuietly(client, refreshToken);
       throw new CallbackRejectedError("Google did not return an access token to verify the account.");
+    }
+
+    // Verify the provisioned scopes via the tokeninfo endpoint rather than
+    // trusting the optional `scope` field on the token response.
+    const tokenInfo = await client.getTokenInfo(accessToken);
+    if (!tokenInfo.scopes.includes(GMAIL_READONLY_SCOPE)) {
+      await this.#revokeQuietly(client, refreshToken);
+      throw new CallbackRejectedError("The gmail.readonly scope was not granted.");
     }
 
     const email = await this.#fetchPrimaryEmail(accessToken);
@@ -148,13 +159,16 @@ export class GoogleAuthorizationService implements AccessTokenProvider {
       updatedAt: new Date().toISOString(),
     };
     await this.#store.write(credential);
+    // A new credential means any cached client is for a stale refresh token.
+    this.#cachedClient = null;
     return credential;
   }
 
   /**
-   * A fresh access token (AccessTokenProvider). google-auth-library refreshes
-   * automatically and keeps access tokens in memory. A rotated refresh token is
-   * persisted via the `tokens` event. `invalid_grant`/revocation flips the
+   * A fresh access token (AccessTokenProvider). The cached client refreshes
+   * automatically and keeps the access token in memory, so repeated renders do
+   * not re-exchange the refresh token. A rotated refresh token is persisted via
+   * the `tokens` event (status-preserving). `invalid_grant`/revocation flips the
    * durable status to `reconnect_required`; transient errors propagate as-is.
    */
   async getAccessToken(): Promise<string> {
@@ -166,16 +180,19 @@ export class GoogleAuthorizationService implements AccessTokenProvider {
       throw new ReconnectRequiredError("The stored Gmail authorization is no longer valid; reconnect.");
     }
 
-    const client = this.#clientWithRefresh(credential.refreshToken);
+    const client = this.#getRefreshClient(credential.refreshToken);
     try {
       const { token } = await client.getAccessToken();
       if (!token) {
         throw new ReconnectRequiredError("Google returned no access token.");
       }
+      // Observe any rotation persistence kicked off by the refresh above.
+      await this.#pendingPersist;
       return token;
     } catch (error) {
       if (error instanceof ReconnectRequiredError) throw error;
       if (isInvalidGrant(error)) {
+        this.#cachedClient = null;
         await this.#markReconnectRequired();
         throw new ReconnectRequiredError(
           "Gmail authorization was revoked or expired; reconnect required.",
@@ -188,10 +205,12 @@ export class GoogleAuthorizationService implements AccessTokenProvider {
 
   /** Called when a live read hit an unrecoverable 401: mark the credential unusable. */
   async flagReconnectRequired(): Promise<void> {
+    this.#cachedClient = null;
     await this.#markReconnectRequired();
   }
 
   async disconnect(): Promise<void> {
+    this.#cachedClient = null;
     const credential = await this.#store.read().catch(() => null);
     if (credential) {
       await this.#revokeQuietly(this.#clientFactory(), credential.refreshToken);
@@ -221,27 +240,38 @@ export class GoogleAuthorizationService implements AccessTokenProvider {
     return { mode: "live", auth: "connected", account: credential.account };
   }
 
-  #clientWithRefresh(refreshToken: string): OAuth2Client {
+  /**
+   * One cached OAuth client per stored refresh token. google-auth-library keeps
+   * the access token in memory and only calls Google once it has expired, so
+   * reusing the client across renders avoids a refresh exchange on every load.
+   * The cache is invalidated on rotation (key updated), reconnect, and disconnect.
+   */
+  #getRefreshClient(refreshToken: string): OAuth2Client {
+    if (this.#cachedClient && this.#cachedClient.refreshToken === refreshToken) {
+      return this.#cachedClient.client;
+    }
     const client = this.#clientFactory();
     client.setCredentials({ refresh_token: refreshToken });
     // Google may rotate the refresh token; persist a new one if it does.
     client.on("tokens", (tokens: Credentials) => {
       if (tokens.refresh_token) {
-        void this.#persistRotatedRefreshToken(tokens.refresh_token);
+        this.#handleRotatedRefreshToken(client, tokens.refresh_token);
       }
     });
+    this.#cachedClient = { refreshToken, client };
     return client;
   }
 
-  async #persistRotatedRefreshToken(refreshToken: string): Promise<void> {
-    const current = await this.#store.read().catch(() => null);
-    if (!current) return;
-    await this.#store.write({
-      ...current,
-      refreshToken,
-      status: "active",
-      updatedAt: new Date().toISOString(),
-    });
+  #handleRotatedRefreshToken(client: OAuth2Client, refreshToken: string): void {
+    // Keep the cache key in sync so the rotated token still hits the cache.
+    if (this.#cachedClient?.client === client) {
+      this.#cachedClient = { refreshToken, client };
+    }
+    // Persist only the token + timestamp (status preserved atomically). Never
+    // leave the promise unobserved: serialize it and route failures to onError.
+    this.#pendingPersist = this.#pendingPersist
+      .then(() => this.#store.updateRefreshToken(refreshToken, new Date().toISOString()))
+      .catch((error) => this.#onError(error));
   }
 
   async #markReconnectRequired(): Promise<void> {

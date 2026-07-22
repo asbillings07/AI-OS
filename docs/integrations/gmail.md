@@ -41,25 +41,36 @@ See the threat model in [ADR-0013](../adr/0013-gmail-authorization-and-credentia
 
 ## 2. Configure the environment
 
-Copy [`.env.example`](../../.env.example) to `apps/mission-control/.env.local`
-(git-ignored) and fill in:
+First generate an encryption key (a `.env` file does not run shell commands, so
+run this in your terminal and copy the output):
 
 ```bash
+openssl rand -base64 32
+```
+
+Then copy [`.env.example`](../../.env.example) to
+`apps/mission-control/.env.local` (git-ignored) and fill in, pasting the key you
+just generated:
+
+```dotenv
 ORION_GMAIL_SOURCE=live
 GOOGLE_OAUTH_CLIENT_ID=...apps.googleusercontent.com
 GOOGLE_OAUTH_CLIENT_SECRET=...
 GOOGLE_OAUTH_REDIRECT_URI=http://localhost:3000/api/gmail/callback
 ORION_GMAIL_ACCOUNT=you@example.com
-ORION_CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -base64 32)
+ORION_CREDENTIAL_ENCRYPTION_KEY=<paste the base64 key here>
 ```
+
+`ORION_GMAIL_SOURCE` accepts only `fixture` (default) or `live`; any other value
+is reported as a misconfiguration rather than silently reading fixtures.
 
 `ORION_GMAIL_ACCOUNT` is the address Orion is allowed to read; the account you
 authorize must match it, or the connection is rejected.
 
-`ORION_CREDENTIAL_ENCRYPTION_KEY` must be a 32-byte key encoded as base64.
-Generate one with `openssl rand -base64 32`. It encrypts the refresh token at
-rest. **Keep it stable** — if you change it, the stored credential can no longer
-be decrypted and Orion will report a misconfiguration until you reconnect.
+`ORION_CREDENTIAL_ENCRYPTION_KEY` must be a 32-byte key encoded as base64 (the
+`openssl rand -base64 32` output). It encrypts the refresh token at rest. **Keep
+it stable** — if you change it, the stored credential can no longer be decrypted
+and Orion will report a misconfiguration until you reconnect.
 
 ## 3. Connect
 

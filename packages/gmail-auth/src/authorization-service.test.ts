@@ -22,6 +22,7 @@ const config: GmailLiveConfig = {
 
 interface FakeOptions {
   tokens?: Credentials;
+  scopes?: string[];
   invalidGrant?: boolean;
   transient?: boolean;
   rotateTo?: string;
@@ -39,6 +40,7 @@ function fakeClient(options: FakeOptions = {}) {
         options.tokens ??
         ({ refresh_token: "rt-initial", access_token: "at-initial", scope: GMAIL_READONLY_SCOPE } as Credentials),
     })),
+    getTokenInfo: vi.fn(async () => ({ scopes: options.scopes ?? [GMAIL_READONLY_SCOPE] })),
     setCredentials: vi.fn(),
     on: vi.fn((event: string, cb: (c: Credentials) => void) => {
       const list = listeners.get(event) ?? [];
@@ -64,11 +66,17 @@ function fakeClient(options: FakeOptions = {}) {
 }
 
 function serviceWith(
-  client: ReturnType<typeof fakeClient>,
+  options: FakeOptions = {},
   store = new InMemoryCredentialStore(),
   profileEmail = "me@example.com",
   profileOk = true,
 ) {
+  const clients: ReturnType<typeof fakeClient>[] = [];
+  const factory = vi.fn(() => {
+    const client = fakeClient(options);
+    clients.push(client);
+    return client as unknown as OAuth2Client;
+  });
   const fetchImpl = vi.fn(async () => ({
     ok: profileOk,
     status: profileOk ? 200 : 403,
@@ -77,10 +85,10 @@ function serviceWith(
   const service = new GoogleAuthorizationService({
     store,
     config,
-    clientFactory: () => client as unknown as OAuth2Client,
+    clientFactory: factory,
     fetchImpl,
   });
-  return { service, store, client };
+  return { service, store, clients, factory };
 }
 
 const activeCredential: StoredCredential = {
@@ -92,11 +100,10 @@ const activeCredential: StoredCredential = {
 
 describe("GoogleAuthorizationService.authorizationUrl", () => {
   it("requests offline access with the readonly scope and carries the state", () => {
-    const client = fakeClient();
-    const { service } = serviceWith(client);
+    const { service, clients } = serviceWith();
     const url = service.authorizationUrl("state-123");
     expect(url).toContain("state=state-123");
-    expect(client.generateAuthUrl).toHaveBeenCalledWith(
+    expect(clients[0]!.generateAuthUrl).toHaveBeenCalledWith(
       expect.objectContaining({
         access_type: "offline",
         prompt: "consent",
@@ -109,34 +116,34 @@ describe("GoogleAuthorizationService.authorizationUrl", () => {
 
 describe("GoogleAuthorizationService.handleCallback", () => {
   it("stores an active credential on the happy path", async () => {
-    const { service, store } = serviceWith(fakeClient());
+    const { service, store } = serviceWith();
     const credential = await service.handleCallback("code");
     expect(credential.status).toBe("active");
     expect((await store.read())?.refreshToken).toBe("rt-initial");
   });
 
   it("rejects when Google returns no refresh token, and revokes", async () => {
-    const client = fakeClient({
+    const { service, store, clients } = serviceWith({
       tokens: { access_token: "at", scope: GMAIL_READONLY_SCOPE } as Credentials,
     });
-    const { service, store } = serviceWith(client);
     await expect(service.handleCallback("code")).rejects.toThrow(CallbackRejectedError);
-    expect(client.revokeToken).toHaveBeenCalled();
+    expect(clients[0]!.revokeToken).toHaveBeenCalled();
     expect(await store.read()).toBeNull();
   });
 
-  it("rejects when gmail.readonly was not granted", async () => {
-    const client = fakeClient({
-      tokens: { refresh_token: "rt", access_token: "at", scope: "" } as Credentials,
+  it("verifies scope via getTokenInfo and rejects when gmail.readonly is absent", async () => {
+    const { service, clients } = serviceWith({
+      tokens: { refresh_token: "rt", access_token: "at" } as Credentials,
+      scopes: [],
     });
-    const { service } = serviceWith(client);
     await expect(service.handleCallback("code")).rejects.toThrow(CallbackRejectedError);
-    expect(client.revokeToken).toHaveBeenCalled();
+    expect(clients[0]!.getTokenInfo).toHaveBeenCalledWith("at");
+    expect(clients[0]!.revokeToken).toHaveBeenCalled();
   });
 
   it("rejects an account mismatch and leaves an existing credential unchanged", async () => {
     const store = new InMemoryCredentialStore(activeCredential);
-    const { service } = serviceWith(fakeClient(), store, "someone-else@example.com");
+    const { service } = serviceWith({}, store, "someone-else@example.com");
     await expect(service.handleCallback("code")).rejects.toThrow(AccountMismatchError);
     expect(await store.read()).toEqual(activeCredential);
   });
@@ -144,71 +151,82 @@ describe("GoogleAuthorizationService.handleCallback", () => {
 
 describe("GoogleAuthorizationService.getAccessToken", () => {
   it("throws ReconnectRequired when no credential is stored", async () => {
-    const { service } = serviceWith(fakeClient());
+    const { service } = serviceWith();
     await expect(service.getAccessToken()).rejects.toThrow(ReconnectRequiredError);
   });
 
-  it("throws ReconnectRequired when the credential is already reconnect_required", async () => {
+  it("throws ReconnectRequired (without creating a client) when reconnect_required", async () => {
     const store = new InMemoryCredentialStore({ ...activeCredential, status: "reconnect_required" });
-    const client = fakeClient();
-    const { service } = serviceWith(client, store);
+    const { service, factory } = serviceWith({}, store);
     await expect(service.getAccessToken()).rejects.toThrow(ReconnectRequiredError);
-    expect(client.getAccessToken).not.toHaveBeenCalled();
+    expect(factory).not.toHaveBeenCalled();
   });
 
   it("returns a fresh access token", async () => {
     const store = new InMemoryCredentialStore(activeCredential);
-    const { service } = serviceWith(fakeClient(), store);
+    const { service } = serviceWith({}, store);
     expect(await service.getAccessToken()).toBe("fresh-access-token");
+  });
+
+  it("caches the client: repeated calls reuse one client (no re-exchange per render)", async () => {
+    const store = new InMemoryCredentialStore(activeCredential);
+    const { service, factory, clients } = serviceWith({}, store);
+    const first = await service.getAccessToken();
+    const second = await service.getAccessToken();
+    expect(first).toBe(second);
+    expect(factory).toHaveBeenCalledTimes(1);
+    expect(clients).toHaveLength(1);
+    expect(clients[0]!.getAccessToken).toHaveBeenCalledTimes(2);
   });
 
   it("marks reconnect_required on invalid_grant", async () => {
     const store = new InMemoryCredentialStore(activeCredential);
-    const { service } = serviceWith(fakeClient({ invalidGrant: true }), store);
+    const { service } = serviceWith({ invalidGrant: true }, store);
     await expect(service.getAccessToken()).rejects.toThrow(ReconnectRequiredError);
     expect((await store.read())?.status).toBe("reconnect_required");
   });
 
   it("does not mark reconnect on a transient error (leaves credential active)", async () => {
     const store = new InMemoryCredentialStore(activeCredential);
-    const { service } = serviceWith(fakeClient({ transient: true }), store);
+    const { service } = serviceWith({ transient: true }, store);
     await expect(service.getAccessToken()).rejects.toThrow(/transient/);
     expect((await store.read())?.status).toBe("active");
   });
 
-  it("persists a rotated refresh token", async () => {
+  it("persists a rotated refresh token while preserving status", async () => {
     const store = new InMemoryCredentialStore(activeCredential);
-    const { service } = serviceWith(fakeClient({ rotateTo: "rt-rotated" }), store);
+    const { service } = serviceWith({ rotateTo: "rt-rotated" }, store);
     await service.getAccessToken();
-    expect((await store.read())?.refreshToken).toBe("rt-rotated");
+    const stored = await store.read();
+    expect(stored?.refreshToken).toBe("rt-rotated");
+    expect(stored?.status).toBe("active");
   });
 });
 
 describe("GoogleAuthorizationService lifecycle", () => {
   it("flagReconnectRequired flips a stored credential", async () => {
     const store = new InMemoryCredentialStore(activeCredential);
-    const { service } = serviceWith(fakeClient(), store);
+    const { service } = serviceWith({}, store);
     await service.flagReconnectRequired();
     expect((await store.read())?.status).toBe("reconnect_required");
   });
 
   it("disconnect revokes and deletes", async () => {
     const store = new InMemoryCredentialStore(activeCredential);
-    const client = fakeClient();
-    const { service } = serviceWith(client, store);
+    const { service, clients } = serviceWith({}, store);
     await service.disconnect();
-    expect(client.revokeToken).toHaveBeenCalled();
+    expect(clients[0]!.revokeToken).toHaveBeenCalled();
     expect(await store.read()).toBeNull();
   });
 
   it("reports integration state across authorization outcomes", async () => {
-    const disconnected = serviceWith(fakeClient(), new InMemoryCredentialStore());
+    const disconnected = serviceWith({}, new InMemoryCredentialStore());
     expect(await disconnected.service.integrationState()).toEqual({
       mode: "live",
       auth: "disconnected",
     });
 
-    const connected = serviceWith(fakeClient(), new InMemoryCredentialStore(activeCredential));
+    const connected = serviceWith({}, new InMemoryCredentialStore(activeCredential));
     expect(await connected.service.integrationState()).toEqual({
       mode: "live",
       auth: "connected",
@@ -216,7 +234,7 @@ describe("GoogleAuthorizationService lifecycle", () => {
     });
 
     const stale = serviceWith(
-      fakeClient(),
+      {},
       new InMemoryCredentialStore({ ...activeCredential, status: "reconnect_required" }),
     );
     expect(await stale.service.integrationState()).toEqual({

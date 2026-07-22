@@ -20,5 +20,13 @@ export interface StoredCredential {
 export interface CredentialStore {
   read(): Promise<StoredCredential | null>;
   write(value: StoredCredential): Promise<void>;
+  /**
+   * Rotate the refresh token WITHOUT touching status. This is a distinct,
+   * status-preserving operation on purpose: a read-modify-write that carried
+   * `status: "active"` could race with a concurrent flip to `reconnect_required`
+   * and silently revive a dead credential. Implementations must update only the
+   * token and timestamp, atomically. A no-op if no credential is stored.
+   */
+  updateRefreshToken(refreshToken: string, updatedAt: string): Promise<void>;
   delete(): Promise<void>;
 }

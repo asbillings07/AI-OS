@@ -14,9 +14,20 @@ const liveEnv = {
 };
 
 describe("readGmailConfig (strict source selection)", () => {
-  it("defaults to fixture mode", () => {
+  it("defaults to fixture mode when unset, empty, or explicitly fixture", () => {
     expect(readGmailConfig({})).toEqual({ mode: "fixture" });
-    expect(readGmailConfig({ ORION_GMAIL_SOURCE: "fixtures" })).toEqual({ mode: "fixture" });
+    expect(readGmailConfig({ ORION_GMAIL_SOURCE: "" })).toEqual({ mode: "fixture" });
+    expect(readGmailConfig({ ORION_GMAIL_SOURCE: "fixture" })).toEqual({ mode: "fixture" });
+  });
+
+  it("reports an unrecognized source value as misconfigured (never silently fixture)", () => {
+    const config = readGmailConfig({ ORION_GMAIL_SOURCE: "lvie" });
+    expect(config.mode).toBe("live");
+    if (config.mode === "live" && config.live === null) {
+      expect(config.issues.some((i) => i.includes("ORION_GMAIL_SOURCE"))).toBe(true);
+    } else {
+      throw new Error("expected a misconfigured live integration");
+    }
   });
 
   it("resolves a fully configured live integration", () => {

@@ -20,6 +20,12 @@ export class InMemoryCredentialStore implements CredentialStore {
     this.#value = { ...value };
   }
 
+  async updateRefreshToken(refreshToken: string, updatedAt: string): Promise<void> {
+    if (!this.#value) return;
+    // Preserve status; only the token and timestamp change.
+    this.#value = { ...this.#value, refreshToken, updatedAt };
+  }
+
   async delete(): Promise<void> {
     this.#value = null;
   }

@@ -59,6 +59,23 @@ describe("SqliteCredentialStore (encrypted at rest)", () => {
     expect(await store.read()).toBeNull();
   });
 
+  it("updateRefreshToken rotates the token but preserves status", async () => {
+    const { store } = newSqliteStore();
+    await store.write({ ...credential, status: "reconnect_required" });
+    await store.updateRefreshToken("1//rotated", "2026-07-21T11:00:00.000Z");
+    const read = await store.read();
+    expect(read?.refreshToken).toBe("1//rotated");
+    expect(read?.updatedAt).toBe("2026-07-21T11:00:00.000Z");
+    // Critically, a rotation must NOT revive a dead credential.
+    expect(read?.status).toBe("reconnect_required");
+  });
+
+  it("updateRefreshToken is a no-op when empty", async () => {
+    const { store } = newSqliteStore();
+    await store.updateRefreshToken("1//rotated", "2026-07-21T11:00:00.000Z");
+    expect(await store.read()).toBeNull();
+  });
+
   it("cannot decrypt a row written under a different key", async () => {
     const { store, file } = newSqliteStore();
     await store.write(credential);

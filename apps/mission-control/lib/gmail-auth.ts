@@ -1,5 +1,6 @@
 import { mkdirSync } from "node:fs";
 import path from "node:path";
+import { createLogger, LogEvents } from "@orion/core";
 import {
   readGmailConfig,
   SqliteCredentialStore,
@@ -46,7 +47,13 @@ function build(): GmailIntegration {
   const { credentialsDbPath, encryptionKey } = config.live;
   mkdirSync(path.dirname(credentialsDbPath), { recursive: true });
   const store = new SqliteCredentialStore(credentialsDbPath, encryptionKey);
-  const service = new GoogleAuthorizationService({ store, config: config.live });
+  const logger = createLogger();
+  const service = new GoogleAuthorizationService({
+    store,
+    config: config.live,
+    onError: (error) =>
+      logger.event(LogEvents.GmailCredentialPersistFailed, { error: String(error) }),
+  });
 
   return { state: () => service.integrationState(), service: () => service };
 }

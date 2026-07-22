@@ -26,6 +26,7 @@ export class SqliteCredentialStore implements CredentialStore {
   readonly #key: Buffer;
   readonly #select: Database.Statement;
   readonly #upsert: Database.Statement;
+  readonly #updateToken: Database.Statement;
   readonly #delete: Database.Statement;
 
   constructor(location: string, encryptionKeyBase64: string) {
@@ -54,6 +55,9 @@ export class SqliteCredentialStore implements CredentialStore {
         status = @status,
         updated_at = @updatedAt
     `);
+    this.#updateToken = this.#db.prepare(
+      `UPDATE gmail_credential SET refresh_token_envelope = @envelope, updated_at = @updatedAt WHERE id = 1`,
+    );
     this.#delete = this.#db.prepare(`DELETE FROM gmail_credential WHERE id = 1`);
   }
 
@@ -77,6 +81,16 @@ export class SqliteCredentialStore implements CredentialStore {
       status: value.status,
       updatedAt: value.updatedAt,
     });
+  }
+
+  async updateRefreshToken(refreshToken: string, updatedAt: string): Promise<void> {
+    // Read the account (needed as encryption AAD), re-encrypt, and update only
+    // the token + timestamp. This runs as synchronous better-sqlite3 calls with
+    // no await in between, so status is preserved atomically within the process.
+    const row = this.#select.get() as CredentialRow | undefined;
+    if (!row) return;
+    const envelope = encryptSecret(refreshToken, this.#key, row.account);
+    this.#updateToken.run({ envelope, updatedAt });
   }
 
   async delete(): Promise<void> {
