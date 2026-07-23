@@ -166,6 +166,35 @@ describe("Gmail Skill ingestion (ADR-0010)", () => {
     expect(store.count()).toBe(1);
   });
 
+  it("is idempotent for sent messages: re-ingesting sent mail adds nothing and preserves outboundCount", async () => {
+    const rawSent: RawGmailMessage = {
+      id: "raw-sent-dup",
+      threadId: "th-sent-dup",
+      labelIds: ["SENT"],
+      snippet: "Replied",
+      internalDate: "1752418800000",
+      payload: {
+        mimeType: "text/plain",
+        headers: [
+          { name: "From", value: "Me <me@orion.dev>" },
+          { name: "To", value: "Dana <dana@acme.com>" },
+        ],
+      },
+    };
+    const { runtime, context, store } = newRuntime();
+    const skill = new GmailSkill({
+      source: {
+        name: "test-source",
+        fetchMessages: async () => [rawSent],
+      },
+    });
+    await skill.ingest(runtime);
+    await skill.ingest(runtime);
+
+    expect(store.count()).toBe(1);
+    expect(context.state.people["dana@acme.com"]?.outboundCount).toBe(1);
+  });
+
   it("is idempotent: re-ingesting adds nothing (at-least-once safe)", async () => {
     const { runtime, store } = newRuntime();
     const skill = new GmailSkill();

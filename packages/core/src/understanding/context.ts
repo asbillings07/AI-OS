@@ -235,29 +235,39 @@ function applyAssignmentReceived(state: ContextState, event: EventEnvelope): Con
   return { ...state, assignments: { ...state.assignments, [key]: assignment } };
 }
 
+function minTimestamp(currentIso: string | undefined, incomingIso: string): string {
+  if (!currentIso) return incomingIso;
+  const currentMs = new Date(currentIso).getTime();
+  const incomingMs = new Date(incomingIso).getTime();
+  const currentValid = Number.isFinite(currentMs);
+  const incomingValid = Number.isFinite(incomingMs);
+
+  if (!incomingValid) return currentIso;
+  if (!currentValid) return incomingIso;
+  return incomingMs < currentMs ? incomingIso : currentIso;
+}
+
+function maxTimestamp(currentIso: string | undefined, incomingIso: string): string {
+  if (!currentIso) return incomingIso;
+  const currentMs = new Date(currentIso).getTime();
+  const incomingMs = new Date(incomingIso).getTime();
+  const currentValid = Number.isFinite(currentMs);
+  const incomingValid = Number.isFinite(incomingMs);
+
+  if (!incomingValid) return currentIso;
+  if (!currentValid) return incomingIso;
+  return incomingMs > currentMs ? incomingIso : currentIso;
+}
+
 function updateTimestampBounds(
   currentFirst: string | undefined,
   currentLast: string | undefined,
   incomingAt: string,
 ): { firstSeenAt: string; lastSeenAt: string } {
-  if (!currentFirst || !currentLast) {
-    return { firstSeenAt: incomingAt, lastSeenAt: incomingAt };
-  }
-  const incomingTime = new Date(incomingAt).getTime();
-  const firstTime = new Date(currentFirst).getTime();
-  const lastTime = new Date(currentLast).getTime();
-
-  const firstSeenAt =
-    Number.isFinite(incomingTime) && Number.isFinite(firstTime) && incomingTime < firstTime
-      ? incomingAt
-      : currentFirst;
-
-  const lastSeenAt =
-    Number.isFinite(incomingTime) && Number.isFinite(lastTime) && incomingTime > lastTime
-      ? incomingAt
-      : currentLast;
-
-  return { firstSeenAt, lastSeenAt };
+  return {
+    firstSeenAt: minTimestamp(currentFirst, incomingAt),
+    lastSeenAt: maxTimestamp(currentLast, incomingAt),
+  };
 }
 function applyCheckFailed(state: ContextState, event: EventEnvelope): ContextState {
   const payload = event.payload as CheckFailedPayload;
@@ -305,17 +315,13 @@ function applyMessageReceived(state: ContextState, event: EventEnvelope): Contex
   }
 
   const currentLastAt = existing?.lastMessageAt;
-  const currentFirstAt = existing?.firstMessageAt;
 
   const incomingWins =
     !existing ||
     occurrenceWins(payload.receivedAt, event.id, currentLastAt!, existing.latestMessageEventId);
 
-  const firstMessageAt = !existing
-    ? payload.receivedAt
-    : occurrenceWins(currentFirstAt!, "", payload.receivedAt, "")
-      ? payload.receivedAt
-      : currentFirstAt!;
+  const firstMessageAt = minTimestamp(existing?.firstMessageAt, payload.receivedAt);
+  const lastMessageAt = maxTimestamp(existing?.lastMessageAt, payload.receivedAt);
 
   const thread: ThreadContext = existing
     ? {
@@ -324,7 +330,7 @@ function applyMessageReceived(state: ContextState, event: EventEnvelope): Contex
         participants: [...participants],
         messages: [...existing.messages, message],
         firstMessageAt,
-        lastMessageAt: incomingWins ? payload.receivedAt : currentLastAt!,
+        lastMessageAt,
         latestMessageEventId: incomingWins ? event.id : existing.latestMessageEventId,
         // A new inbound message reopens a handled or snoozed thread the user had
         // put down. Dismissed is a durable mute — the user said this isn't worth
@@ -398,17 +404,13 @@ function applyMessageSent(state: ContextState, event: EventEnvelope): ContextSta
   }
 
   const currentLastAt = existing?.lastMessageAt;
-  const currentFirstAt = existing?.firstMessageAt;
 
   const incomingWins =
     !existing ||
     occurrenceWins(payload.sentAt, event.id, currentLastAt!, existing.latestMessageEventId);
 
-  const firstMessageAt = !existing
-    ? payload.sentAt
-    : occurrenceWins(currentFirstAt!, "", payload.sentAt, "")
-      ? payload.sentAt
-      : currentFirstAt!;
+  const firstMessageAt = minTimestamp(existing?.firstMessageAt, payload.sentAt);
+  const lastMessageAt = maxTimestamp(existing?.lastMessageAt, payload.sentAt);
 
   const thread: ThreadContext = existing
     ? {
@@ -417,7 +419,7 @@ function applyMessageSent(state: ContextState, event: EventEnvelope): ContextSta
         participants: [...participants],
         messages: [...existing.messages, message],
         firstMessageAt,
-        lastMessageAt: incomingWins ? payload.sentAt : currentLastAt!,
+        lastMessageAt,
         latestMessageEventId: incomingWins ? event.id : existing.latestMessageEventId,
         status: existing.status,
         snoozedUntil: existing.snoozedUntil,

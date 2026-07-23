@@ -1,9 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { makeEvent } from "../events/index.js";
 import { EventTypes, type MessageReceivedPayload, type MessageSentPayload } from "../domain/index.js";
-import { contextProjection, type ContextState } from "./context.js";
+import { contextProjection, latestThreadMessage, type ContextState } from "./context.js";
 import { detectSignals } from "./signals.js";
 import { timelineProjection } from "./timeline.js";
+import { buildWorkItems, attentionProjection } from "../index.js";
 
 function message(overrides: Partial<MessageReceivedPayload> & { threadId: string; messageId: string }) {
   const payload: MessageReceivedPayload = {
@@ -79,6 +80,78 @@ describe("Context projection (ADR-0005)", () => {
     expect(context.people["dana@acme.com"]?.outboundCount).toBe(1);
     expect(context.people["dana@acme.com"]?.name).toBe("Dana");
     expect(context.people["me@orion.dev"]).toBeUndefined();
+  });
+
+  it("increments outboundCount for multiple distinct external recipients", () => {
+    const context = [
+      sentMessage({
+        threadId: "t1",
+        messageId: "s1",
+        from: { address: "me@orion.dev" },
+        to: [
+          { address: "dana@acme.com", name: "Dana" },
+          { address: "john@example.com", name: "John" },
+        ],
+      }),
+    ].reduce((state, event) => contextProjection.apply(state, event), contextProjection.init());
+
+    expect(context.people["dana@acme.com"]?.outboundCount).toBe(1);
+    expect(context.people["john@example.com"]?.outboundCount).toBe(1);
+  });
+
+  it("handles malformed and valid timestamps symmetrically across arrival orders", () => {
+    const validTime = "2026-07-15T09:00:00.000Z";
+    const malformedTime = "invalid-date";
+
+    const malformedFirst = [
+      message({ threadId: "t1", messageId: "m1", receivedAt: malformedTime }),
+      message({ threadId: "t1", messageId: "m2", receivedAt: validTime }),
+    ].reduce((state, event) => contextProjection.apply(state, event), contextProjection.init());
+
+    const validFirst = [
+      message({ threadId: "t1", messageId: "m2", receivedAt: validTime }),
+      message({ threadId: "t1", messageId: "m1", receivedAt: malformedTime }),
+    ].reduce((state, event) => contextProjection.apply(state, event), contextProjection.init());
+
+    const person1 = malformedFirst.people["dana@acme.com"]!;
+    const person2 = validFirst.people["dana@acme.com"]!;
+
+    expect(person1.firstSeenAt).toBe(validTime);
+    expect(person1.lastSeenAt).toBe(validTime);
+
+    expect(person2.firstSeenAt).toBe(validTime);
+    expect(person2.lastSeenAt).toBe(validTime);
+
+    expect(malformedFirst.threads.t1?.firstMessageAt).toBe(validTime);
+    expect(malformedFirst.threads.t1?.lastMessageAt).toBe(validTime);
+    expect(validFirst.threads.t1?.firstMessageAt).toBe(validTime);
+    expect(validFirst.threads.t1?.lastMessageAt).toBe(validTime);
+  });
+
+  it("cross-direction out-of-order delivery produces the same latest direction and Work Item", () => {
+    const inbound = message({ threadId: "t1", messageId: "m1", body: "Question?", receivedAt: "2026-07-15T09:00:00.000Z" });
+    const outbound = sentMessage({ threadId: "t1", messageId: "s1", body: "Answer!", sentAt: "2026-07-15T10:00:00.000Z" });
+
+    // Order 1: Inbound then Outbound
+    const context1 = [inbound, outbound].reduce(
+      (state, event) => contextProjection.apply(state, event),
+      contextProjection.init(),
+    );
+
+    // Order 2: Outbound then Inbound (delayed arrival of inbound)
+    const context2 = [outbound, inbound].reduce(
+      (state, event) => contextProjection.apply(state, event),
+      contextProjection.init(),
+    );
+
+    expect(latestThreadMessage(context1.threads.t1!)?.direction).toBe("outbound");
+    expect(latestThreadMessage(context2.threads.t1!)?.direction).toBe("outbound");
+
+    const items1 = buildWorkItems({ context: context1, attention: attentionProjection.init(), now: "2026-07-15T12:00:00.000Z" });
+    const items2 = buildWorkItems({ context: context2, attention: attentionProjection.init(), now: "2026-07-15T12:00:00.000Z" });
+
+    expect(items1.find((item) => item.subject.id === "t1")).toBeUndefined();
+    expect(items2.find((item) => item.subject.id === "t1")).toBeUndefined();
   });
 
   it("updates timestamps using domain occurrence time rather than append order", () => {
