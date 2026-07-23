@@ -49,15 +49,13 @@ export async function suppressOriginatorAction(formData: FormData): Promise<void
 }
 
 export async function unsuppressOriginatorAction(formData: FormData): Promise<void> {
-  const namespace = String(formData.get("namespace") ?? "");
-  const id = String(formData.get("id") ?? "");
   const suppressionEventId = String(formData.get("suppressionEventId") ?? "");
   const reason = formData.get("reason") ? String(formData.get("reason")) : undefined;
 
-  if (!namespace || !id || !suppressionEventId) {
+  if (!suppressionEventId) {
     return;
   }
 
-  await recordOriginatorUnsuppression({ namespace, id }, suppressionEventId, reason);
+  await recordOriginatorUnsuppression(suppressionEventId, reason);
   revalidatePath("/");
 }

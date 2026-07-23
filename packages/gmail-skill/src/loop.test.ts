@@ -298,7 +298,6 @@ describe("the decision loop (ADR-0002/0005/0007/0008/0009/0012)", () => {
     const unsuppressEvt = buildUnsuppressOriginatorEvent({
       attention: attention.state as AttentionState,
       now: NOW,
-      originator: { namespace: "gmail-skill", id: "dana@acme.com" },
       suppressionEventId: activeRule!.suppressionEventId,
     });
     expect(unsuppressEvt).not.toBeNull();

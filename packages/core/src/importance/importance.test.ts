@@ -429,6 +429,18 @@ describe("personalImportanceProjection: folding (#65)", () => {
     expect(state.byOriginator[originatorKey(DANA)]).toBeUndefined();
     expect(importanceFor(state, DANA)).toBe(NEUTRAL_IMPORTANCE);
   });
+
+  it("proves one 'Not important' dismissal remains neutral and two dismissals move below neutral (#83)", () => {
+    const oneDismissal = foldImportance([action(EventTypes.WorkItemDismissed, "act-1", DANA)]);
+    expect(importanceFor(oneDismissal, DANA)).toBe(NEUTRAL_IMPORTANCE);
+
+    const twoDismissals = foldImportance([
+      action(EventTypes.WorkItemDismissed, "act-1", DANA),
+      action(EventTypes.WorkItemDismissed, "act-2", DANA),
+    ]);
+    expect(importanceFor(twoDismissals, DANA)).toBeLessThan(NEUTRAL_IMPORTANCE);
+    expect(importanceFor(twoDismissals, DANA)).toBeCloseTo(0.25, 10);
+  });
 });
 
 // --- importanceContributionFor: the plain data prioritize() actually sees -----

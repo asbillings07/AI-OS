@@ -254,7 +254,6 @@ export async function recordOriginatorSuppression(
 }
 
 export async function recordOriginatorUnsuppression(
-  originator: OriginatorRef,
   suppressionEventId: string,
   reason?: string,
 ): Promise<boolean> {
@@ -264,14 +263,13 @@ export async function recordOriginatorUnsuppression(
     buildUnsuppressOriginatorEvent({
       attention: attention.state,
       now: new Date().toISOString(),
-      originator,
       suppressionEventId,
       reason,
     }),
   );
 
   if (recorded) {
-    logger.event(LogEvents.UserActionRecorded, { action: "unsuppress_originator", originator: originator.id });
+    logger.event(LogEvents.UserActionRecorded, { action: "unsuppress_originator", suppressionEventId });
   }
   return recorded;
 }

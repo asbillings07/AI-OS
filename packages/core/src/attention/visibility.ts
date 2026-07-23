@@ -1,6 +1,6 @@
 import type { Opportunity } from "../opportunity/index.js";
 import { subjectKey } from "../subject/index.js";
-import { originatorKey, type OriginatorRef } from "../domain/index.js";
+import { originatorKey } from "../domain/index.js";
 import type { ContextState } from "../understanding/context.js";
 import { originatorFor } from "../importance/index.js";
 import type { AttentionDisposition, AttentionState } from "./projection.js";
@@ -55,17 +55,10 @@ export function isVisible(
   opportunity: Opportunity,
   attention: AttentionState,
   now: string,
-  contextOrOriginator?: ContextState | OriginatorRef | null,
+  context: ContextState,
 ): boolean {
   if (attention.suppressedOriginators && Object.keys(attention.suppressedOriginators).length > 0) {
-    let originator: OriginatorRef | null = null;
-    if (contextOrOriginator) {
-      if ("namespace" in contextOrOriginator && "id" in contextOrOriginator) {
-        originator = contextOrOriginator;
-      } else {
-        originator = originatorFor(opportunity.subject, contextOrOriginator as ContextState);
-      }
-    }
+    const originator = originatorFor(opportunity.subject, context);
     if (originator) {
       const key = originatorKey(originator);
       if (attention.suppressedOriginators[key]) {

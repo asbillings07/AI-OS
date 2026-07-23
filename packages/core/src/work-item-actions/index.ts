@@ -238,7 +238,6 @@ export function buildSuppressOriginatorEvent(
 export interface BuildUnsuppressOriginatorEventInput {
   readonly attention: AttentionState;
   readonly now: string;
-  readonly originator: OriginatorRef;
   /** Active rule token (`suppressionEventId`). Compared against `attention.suppressedOriginators`. */
   readonly suppressionEventId: string;
   readonly reason?: string;
@@ -247,15 +246,17 @@ export interface BuildUnsuppressOriginatorEventInput {
 export function buildUnsuppressOriginatorEvent(
   input: BuildUnsuppressOriginatorEventInput,
 ): EventEnvelope | null {
-  const { attention, now, originator, suppressionEventId, reason } = input;
+  const { attention, now, suppressionEventId, reason } = input;
 
-  const key = originatorKey(originator);
-  const active = attention.suppressedOriginators?.[key];
+  const active = Object.values(attention.suppressedOriginators ?? {}).find(
+    (rule) => rule.suppressionEventId === suppressionEventId,
+  );
 
-  if (!active || active.suppressionEventId !== suppressionEventId) {
+  if (!active) {
     return null;
   }
 
+  const originator = active.originator;
   const id = unsuppressOriginatorEventId({ originator, suppressionEventId });
 
   return makeEvent({

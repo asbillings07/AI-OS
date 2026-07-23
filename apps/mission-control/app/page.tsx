@@ -236,8 +236,6 @@ export default async function Page({
                   {suppressed.originator.namespace}: {suppressed.originator.id}
                 </span>
                 <form action={unsuppressOriginatorAction}>
-                  <input type="hidden" name="namespace" value={suppressed.originator.namespace} />
-                  <input type="hidden" name="id" value={suppressed.originator.id} />
                   <input type="hidden" name="suppressionEventId" value={suppressed.suppressionEventId} />
                   <button type="submit" className="action action--unmute">
                     Unmute
