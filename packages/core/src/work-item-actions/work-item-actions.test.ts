@@ -539,40 +539,55 @@ describe("work-item-actions: recorded actions replay identically (#61, #83, ADR-
   it("rebuilds exact suppress -> unmute -> re-suppress state including suppressionHeads (#83)", async () => {
     const h = harness();
     await h.runtime.record(reviewEvent("r1", "2026-07-15T12:00:00.000Z"));
-    const item = reviewItem(h);
+    const preSuppressItem = reviewItem(h);
 
     // Suppress
-    await h.runtime.recordExclusive(() =>
+    const suppressResult = await h.runtime.recordExclusive(() =>
       buildSuppressOriginatorEvent({
         context: h.context.state,
         attention: h.attention.state,
         now: NOW,
-        workItemId: item.id,
-        revision: item.attentionRevision,
+        workItemId: preSuppressItem.id,
+        revision: preSuppressItem.attentionRevision,
+        expectedSuppressionHeadEventId: preSuppressItem.suppressionCandidate?.expectedSuppressionHeadEventId,
       }),
     );
+    expect(suppressResult).toBe(true);
 
     const activeRule = h.attention.state.suppressedOriginators[JSON.stringify(["github-skill", "dana"])];
+    expect(activeRule).toBeDefined();
 
     // Unmute
-    await h.runtime.recordExclusive(() =>
+    const unmuteResult = await h.runtime.recordExclusive(() =>
       buildUnsuppressOriginatorEvent({
         attention: h.attention.state,
         now: NOW,
         suppressionEventId: activeRule!.suppressionEventId,
       }),
     );
+    expect(unmuteResult).toBe(true);
+
+    // Re-render fresh Work Item post-Unmute
+    const postUnmuteItem = reviewItem(h);
+    expect(postUnmuteItem.suppressionCandidate?.expectedSuppressionHeadEventId).toBe(
+      h.attention.state.suppressionHeads[JSON.stringify(["github-skill", "dana"])],
+    );
 
     // Re-suppress
-    await h.runtime.recordExclusive(() =>
+    const resuppressResult = await h.runtime.recordExclusive(() =>
       buildSuppressOriginatorEvent({
         context: h.context.state,
         attention: h.attention.state,
         now: NOW,
-        workItemId: item.id,
-        revision: item.attentionRevision,
+        workItemId: postUnmuteItem.id,
+        revision: postUnmuteItem.attentionRevision,
+        expectedSuppressionHeadEventId: postUnmuteItem.suppressionCandidate?.expectedSuppressionHeadEventId,
       }),
     );
+    expect(resuppressResult).toBe(true);
+
+    const reActiveRule = h.attention.state.suppressedOriginators[JSON.stringify(["github-skill", "dana"])];
+    expect(reActiveRule).toBeDefined();
 
     const liveAttention = structuredClone(h.attention.state);
     const liveItems = buildWorkItems({ context: h.context.state, attention: h.attention.state, now: NOW });
