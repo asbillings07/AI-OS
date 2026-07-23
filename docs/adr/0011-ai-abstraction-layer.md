@@ -37,7 +37,7 @@ The **durable contract**:
 
 - **Positive:** Providers and models can change, mix, or run locally without touching application logic ([Eng #8](../principles/engineering.md)); the advisory/deterministic boundary ([ADR-0004](./0004-ai-recommends-rules-decide.md)) has a single enforcement point; cost/latency/quality are observable in one place; prompts stop sprawling.
 - **Negative / costs:** The abstraction has a real design cost and can lag provider-specific features (the newest capability may not be exposed immediately); a capability interface is one more layer to maintain for the single-provider MVP.
-- **Follow-ups / new constraints:** A capability router (model selection, fallback, cost/latency optimization) is a later addition behind the same interface; multimodal, ensembles, and local inference extend the abstraction rather than exposing provider APIs; Skills reach AI *only* through this layer.
+- **Follow-ups / new constraints:** A capability router (model selection, fallback, cost/latency optimization) is a later addition behind the same interface; multimodal, ensembles, and local inference extend the abstraction rather than exposing provider APIs; Skills reach AI *only* through this layer. Caching validated outputs ([ADR-0015](0015-cache-advisory-ai-outputs.md), #80) sits entirely in front of this same `AiCapabilities` interface — no contract change.
 
 ## Principles
 

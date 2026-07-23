@@ -39,7 +39,16 @@ export const LogEvents = {
   OpportunityEvaluated: "opportunity.evaluated",
   WorkItemRanked: "workitem.ranked",
   UserActionRecorded: "user.action.recorded",
-  AiInvoked: "ai.invoked",
+  /**
+   * A neutral name (#80): every completed `summarize()`/`classify()` request
+   * fires this, whether served from cache, coalesced onto an in-flight call,
+   * or actually delegated — `providerInvoked` is the field that says whether
+   * the provider itself ran, since a request completing is not the same as
+   * that.
+   */
+  AiRequestCompleted: "ai.request.completed",
+  /** A cached advisory output aged out or was evicted for capacity (#80). */
+  AiCacheEvicted: "ai.cache.evicted",
   GmailCredentialPersistFailed: "gmail.credential.persist_failed",
   // Live Gmail resilience. Retry traces a transient failure that will be retried;
   // Dropped traces a message abandoned after best-effort hydration. Neither ever
