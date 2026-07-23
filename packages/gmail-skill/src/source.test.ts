@@ -106,7 +106,7 @@ describe("LiveGmailSource", () => {
     const { source } = makeSource(fetchImpl);
     const messages = await source.fetchMessages();
     expect(messages.map((m) => m.id)).toEqual(["m1", "m2"]);
-    expect(calls[0]).toContain("in%3Ainbox");
+    expect(calls[0]).toContain("in%3Ainbox+OR+in%3Asent");
   });
 
   it("paginates via nextPageToken, dedups, and stops at maxMessages", async () => {

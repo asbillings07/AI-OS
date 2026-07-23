@@ -82,7 +82,7 @@ export type GmailTrace = (event: string, fields: Record<string, unknown>) => voi
 export interface LiveGmailSourceOptions {
   /** Where each request's bearer token comes from (refreshed elsewhere). */
   tokenProvider: AccessTokenProvider;
-  /** Gmail search query, e.g. "in:inbox newer_than:7d". */
+  /** Gmail search query, e.g. "(in:inbox OR in:sent) newer_than:7d". */
   query?: string;
   /** Total messages to ingest across all pages. Default 100. */
   maxMessages?: number;
@@ -169,7 +169,7 @@ export class LiveGmailSource implements GmailSource {
 
   constructor(options: LiveGmailSourceOptions) {
     this.#tokenProvider = options.tokenProvider;
-    this.#query = options.query ?? "in:inbox newer_than:7d";
+    this.#query = options.query ?? "(in:inbox OR in:sent) newer_than:7d";
     this.#maxMessages = options.maxMessages ?? 100;
     this.#pageSize = options.pageSize ?? 100;
     this.#hydrationConcurrency = options.hydrationConcurrency ?? 5;

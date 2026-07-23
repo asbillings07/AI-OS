@@ -9,6 +9,8 @@ import type { SubjectRef } from "../subject/index.js";
 export const EventTypes = {
   /** A message arrived for the user, from any communication Source. */
   MessageReceived: "MessageReceived",
+  /** A message was sent by the user, from any communication Source. */
+  MessageSent: "MessageSent",
   /** Someone asked the user to review a change (e.g. a proposed code change). */
   ReviewRequested: "ReviewRequested",
   /** The user was made responsible for a unit of work. */
@@ -50,6 +52,26 @@ export interface MessageReceivedPayload {
   body: string;
   /** When the message arrived, ISO 8601 UTC. */
   receivedAt: string;
+}
+
+/**
+ * A communication message sent by the user, normalized to domain shape. "Sent" = outbound from
+ * the user; the Understanding Engine derives relationship and response status from this fact.
+ */
+export interface MessageSentPayload {
+  /** Stable domain id for this message. */
+  messageId: string;
+  /** Conversation this message belongs to. */
+  threadId: string;
+  from: EmailAddress;
+  to: EmailAddress[];
+  subject: string;
+  /** Short preview for display. */
+  snippet: string;
+  /** Plain-text body, for deterministic classification and AI summarization. */
+  body: string;
+  /** When the message was sent, ISO 8601 UTC. */
+  sentAt: string;
 }
 
 /**
@@ -210,6 +232,7 @@ export function isCurrentActionPayload(
 }
 
 export type MessageReceivedEvent = EventEnvelope<"MessageReceived", MessageReceivedPayload>;
+export type MessageSentEvent = EventEnvelope<"MessageSent", MessageSentPayload>;
 export type ReviewRequestedEvent = EventEnvelope<"ReviewRequested", ReviewRequestedPayload>;
 export type AssignmentReceivedEvent = EventEnvelope<"AssignmentReceived", AssignmentReceivedPayload>;
 export type CheckFailedEvent = EventEnvelope<"CheckFailed", CheckFailedPayload>;

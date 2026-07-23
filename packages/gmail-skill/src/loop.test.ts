@@ -81,4 +81,152 @@ describe("the decision loop (ADR-0002/0005/0007/0008/0009/0012)", () => {
     await second.runtime.rebuild();
     expect(second.items().find((item) => item.subject.id === "th-fyi")).toBeUndefined();
   });
+
+  it("sending an outbound message removes the thread Work Item entirely, and a newer inbound resurfaces it", async () => {
+    const store = new SqliteEventStore(":memory:");
+    const { runtime, items } = runtimeOver(store);
+    await runtime.rebuild();
+
+    // Inbound question arrives
+    await runtime.record(
+      makeEvent({
+        type: EventTypes.MessageReceived,
+        source: "gmail-skill",
+        id: "gmail:m-in-1",
+        occurredAt: "2026-07-15T09:00:00.000Z",
+        payload: {
+          messageId: "m-in-1",
+          threadId: "th-outbound-test",
+          from: { name: "Dana", address: "dana@acme.com" },
+          to: [{ address: "me@orion.dev" }],
+          subject: "Deck feedback?",
+          snippet: "Thoughts?",
+          body: "Do you have thoughts on the deck?",
+          receivedAt: "2026-07-15T09:00:00.000Z",
+        },
+      }),
+    );
+
+    expect(items().find((item) => item.subject.id === "th-outbound-test")).toBeDefined();
+
+    // User sends outbound reply
+    await runtime.record(
+      makeEvent({
+        type: EventTypes.MessageSent,
+        source: "gmail-skill",
+        id: "gmail:sent:m-out-1",
+        occurredAt: "2026-07-15T10:00:00.000Z",
+        payload: {
+          messageId: "m-out-1",
+          threadId: "th-outbound-test",
+          from: { address: "me@orion.dev" },
+          to: [{ name: "Dana", address: "dana@acme.com" }],
+          subject: "Re: Deck feedback?",
+          snippet: "Looks great!",
+          body: "The deck looks great, thanks!",
+          sentAt: "2026-07-15T10:00:00.000Z",
+        },
+      }),
+    );
+
+    // Work Item is completely removed from Mission Control (whole-obligation suppression)
+    expect(items().find((item) => item.subject.id === "th-outbound-test")).toBeUndefined();
+
+    // Newer inbound message arrives on the same thread
+    await runtime.record(
+      makeEvent({
+        type: EventTypes.MessageReceived,
+        source: "gmail-skill",
+        id: "gmail:m-in-2",
+        occurredAt: "2026-07-15T11:00:00.000Z",
+        payload: {
+          messageId: "m-in-2",
+          threadId: "th-outbound-test",
+          from: { name: "Dana", address: "dana@acme.com" },
+          to: [{ address: "me@orion.dev" }],
+          subject: "Re: Deck feedback?",
+          snippet: "Awesome, one follow up",
+          body: "Awesome! Can you check slide 4 as well?",
+          receivedAt: "2026-07-15T11:00:00.000Z",
+        },
+      }),
+    );
+
+    // Resurfaces as an active Work Item
+    const resurfaced = items().find((item) => item.subject.id === "th-outbound-test");
+    expect(resurfaced).toBeDefined();
+    expect(resurfaced?.reason).toContain("You've exchanged messages with this person.");
+  });
+
+  it("exact Context and Work Item parity after rebuilding a log containing MessageSent", async () => {
+    const store = new SqliteEventStore(":memory:");
+    const first = runtimeOver(store);
+    await first.runtime.rebuild();
+
+    await first.runtime.record(
+      makeEvent({
+        type: EventTypes.MessageReceived,
+        source: "gmail-skill",
+        id: "gmail:m-in-1",
+        occurredAt: "2026-07-15T09:00:00.000Z",
+        payload: {
+          messageId: "m-in-1",
+          threadId: "th-parity-1",
+          from: { name: "Dana", address: "dana@acme.com" },
+          to: [{ address: "me@orion.dev" }],
+          subject: "Question 1",
+          snippet: "Q1",
+          body: "Question 1?",
+          receivedAt: "2026-07-15T09:00:00.000Z",
+        },
+      }),
+    );
+
+    await first.runtime.record(
+      makeEvent({
+        type: EventTypes.MessageSent,
+        source: "gmail-skill",
+        id: "gmail:sent:m-out-1",
+        occurredAt: "2026-07-15T10:00:00.000Z",
+        payload: {
+          messageId: "m-out-1",
+          threadId: "th-parity-1",
+          from: { address: "me@orion.dev" },
+          to: [{ name: "Dana", address: "dana@acme.com" }],
+          subject: "Re: Question 1",
+          snippet: "Answer 1",
+          body: "Here is answer 1",
+          sentAt: "2026-07-15T10:00:00.000Z",
+        },
+      }),
+    );
+
+    await first.runtime.record(
+      makeEvent({
+        type: EventTypes.MessageReceived,
+        source: "gmail-skill",
+        id: "gmail:m-in-2",
+        occurredAt: "2026-07-15T11:00:00.000Z",
+        payload: {
+          messageId: "m-in-2",
+          threadId: "th-parity-2",
+          from: { name: "Priya", address: "priya@acme.com" },
+          to: [{ address: "me@orion.dev" }],
+          subject: "Question 2",
+          snippet: "Q2",
+          body: "Question 2?",
+          receivedAt: "2026-07-15T11:00:00.000Z",
+        },
+      }),
+    );
+
+    const liveContext = first.context.state;
+    const liveItems = first.items();
+
+    const second = runtimeOver(store);
+    await second.runtime.rebuild();
+
+    expect(second.context.state).toEqual(liveContext);
+    expect(second.items()).toEqual(liveItems);
+  });
 });
