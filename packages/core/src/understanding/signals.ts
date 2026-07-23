@@ -35,7 +35,6 @@ export interface Signal {
 }
 
 const AGING_HOURS = 24;
-const KNOWN_PERSON_THRESHOLD = 2;
 const QUESTION_PATTERN = /\?|\b(can you|could you|would you|please|let me know|thoughts|when can|are you able)\b/i;
 
 function hoursBetween(fromIso: string, toIso: string): number {
@@ -96,14 +95,17 @@ export function detectSignals(context: ContextState, now: string): Signal[] {
     }
 
     const person = context.people[lastSender];
-    if (person && person.messageCount >= KNOWN_PERSON_THRESHOLD) {
-      signals.push({
-        kind: "FromKnownPerson",
-        subject,
-        strength: Math.min(1, 0.4 + person.messageCount * 0.15),
-        evidence: `From ${person.name ?? lastSender}, someone you correspond with (${person.messageCount} messages).`,
-        sourceEventIds: eventIds,
-      });
+    if (person) {
+      const exchangedCount = Math.min(person.inboundCount ?? 0, person.outboundCount ?? 0);
+      if (exchangedCount > 0) {
+        signals.push({
+          kind: "FromKnownPerson",
+          subject,
+          strength: Math.min(1, 0.4 + exchangedCount * 0.15),
+          evidence: `You've exchanged messages with ${person.name ?? lastSender}.`,
+          sourceEventIds: eventIds,
+        });
+      }
     }
 
     const age = hoursBetween(thread.lastReceivedAt, now);

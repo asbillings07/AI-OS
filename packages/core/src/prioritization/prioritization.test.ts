@@ -109,23 +109,50 @@ describe("Prioritization (#29)", () => {
     expect(lowCapacity[0]?.band).toBe("can_wait");
   });
 
-  it("ranks a known correspondent's question above a stranger's FYI", () => {
+  it("treats repeated inbound-only sender identically to a first-time sender (no false correspondence boost)", () => {
     const context = contextOf([
-      // Known person: appears twice -> relationship/commitment.
-      message({ threadId: "t1", messageId: "m1a", subject: "Deck", body: "Can you review the deck?" }),
-      message({ threadId: "t2", messageId: "m1b", subject: "Deck follow-up", body: "Thanks!" }),
-      // Stranger, no question.
+      // Repeated sender (inbound only, no question)
+      message({
+        threadId: "t1",
+        messageId: "m1a",
+        from: { name: "Repeat Sender", address: "repeat@example.com" },
+        subject: "Notice 1",
+        body: "Here is update one.",
+      }),
+      message({
+        threadId: "t2",
+        messageId: "m1b",
+        from: { name: "Repeat Sender", address: "repeat@example.com" },
+        subject: "Notice 2",
+        body: "Here is update two.",
+      }),
+      // First-time sender (inbound only, no question)
       message({
         threadId: "t3",
         messageId: "m2",
-        from: { name: "Stranger", address: "someone@elsewhere.com" },
-        subject: "FYI",
-        body: "Just sharing an update, no action needed.",
+        from: { name: "First-time Sender", address: "first@example.com" },
+        subject: "Notice 3",
+        body: "Here is update three.",
       }),
     ]);
+
     const ranked = items(context, NOON);
-    expect(ranked[0]?.subject.id === "t1" || ranked[0]?.subject.id === "t2").toBe(true);
-    expect(ranked[ranked.length - 1]?.subject.id).toBe("t3");
+    const repeatItem = ranked.find((i) => i.subject.id === "t2")!;
+    const firstItem = ranked.find((i) => i.subject.id === "t3")!;
+
+    expect(repeatItem).toBeDefined();
+    expect(firstItem).toBeDefined();
+
+    // Priority and commitment are identical (no relationship boost from inbound volume alone)
+    expect(repeatItem.commitment).toBe(0);
+    expect(firstItem.commitment).toBe(0);
+    expect(repeatItem.priority).toBe(firstItem.priority);
+
+    // Reason and evidence carry no false relationship claims
+    expect(repeatItem.reason).not.toContain("correspond");
+    expect(repeatItem.reason).not.toContain("exchanged");
+    expect(repeatItem.evidence.join(" ")).not.toContain("correspond");
+    expect(repeatItem.evidence.join(" ")).not.toContain("exchanged");
   });
 
   it("produces silence (no Work Items) when nothing awaits action", () => {
