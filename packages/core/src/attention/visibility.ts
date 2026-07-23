@@ -1,5 +1,8 @@
 import type { Opportunity } from "../opportunity/index.js";
 import { subjectKey } from "../subject/index.js";
+import { originatorKey } from "../domain/index.js";
+import type { ContextState } from "../understanding/context.js";
+import { originatorFor } from "../importance/index.js";
 import type { AttentionDisposition, AttentionState } from "./projection.js";
 
 /**
@@ -48,7 +51,22 @@ function isVisibleUnder(
  * only presentation (the same Context under different AttentionState yields the
  * same raw Opportunities but different visible ones).
  */
-export function isVisible(opportunity: Opportunity, attention: AttentionState, now: string): boolean {
+export function isVisible(
+  opportunity: Opportunity,
+  attention: AttentionState,
+  now: string,
+  context: ContextState,
+): boolean {
+  if (attention.suppressedOriginators && Object.keys(attention.suppressedOriginators).length > 0) {
+    const originator = originatorFor(opportunity.subject, context);
+    if (originator) {
+      const key = originatorKey(originator);
+      if (attention.suppressedOriginators[key]) {
+        return false;
+      }
+    }
+  }
+
   const disposition = attention.dispositions[subjectKey(opportunity.subject)];
   if (!disposition) return true;
   return isVisibleUnder(opportunity, disposition, now);

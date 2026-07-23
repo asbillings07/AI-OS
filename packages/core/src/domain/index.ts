@@ -23,6 +23,10 @@ export const EventTypes = {
   WorkItemSnoozed: "WorkItemSnoozed",
   /** The user dismissed a Work Item as not needing attention. */
   WorkItemDismissed: "WorkItemDismissed",
+  /** The user explicitly suppressed all future work from an originator. */
+  OriginatorSuppressed: "OriginatorSuppressed",
+  /** The user revoked a prior suppression for an originator. */
+  OriginatorUnsuppressed: "OriginatorUnsuppressed",
   /** Orion's own Observation that a situation is worth acting on (Source: orion). */
   OpportunityDetected: "OpportunityDetected",
 } as const;
@@ -239,6 +243,36 @@ export type CheckFailedEvent = EventEnvelope<"CheckFailed", CheckFailedPayload>;
 export type WorkItemActedOnEvent = EventEnvelope<"WorkItemActedOn", WorkItemActionPayload>;
 export type WorkItemSnoozedEvent = EventEnvelope<"WorkItemSnoozed", WorkItemSnoozePayload>;
 export type WorkItemDismissedEvent = EventEnvelope<"WorkItemDismissed", WorkItemActionPayload>;
+
+/**
+/ * Payload for suppressing future work from an originator. Hard, durable suppression.
+ */
+export interface OriginatorSuppressedPayload {
+  readonly originator: OriginatorRef;
+  readonly reason?: string;
+}
+
+/**
+ * Payload for unsuppressing an originator.
+ */
+export interface OriginatorUnsuppressedPayload {
+  readonly originator: OriginatorRef;
+  /**
+   * The ID of the OriginatorSuppressed event being unsuppressed. Acts as a causal
+   * concurrency token so an unsuppress call targets a specific suppression rule.
+   */
+  readonly suppressionEventId: string;
+  readonly reason?: string;
+}
+
+export type OriginatorSuppressedEvent = EventEnvelope<
+  "OriginatorSuppressed",
+  OriginatorSuppressedPayload
+>;
+export type OriginatorUnsuppressedEvent = EventEnvelope<
+  "OriginatorUnsuppressed",
+  OriginatorUnsuppressedPayload
+>;
 
 /** True for automated/no-reply senders — messages that rarely warrant a reply. */
 export function isAutomatedSender(address: string): boolean {

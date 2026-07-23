@@ -1,7 +1,7 @@
 import type { WorkItem } from "@orion/core";
 import type { GmailIntegrationState } from "@orion/gmail-auth";
 import { readMissionControl, type MissionControlView } from "../lib/orion";
-import { actOnWorkItem } from "./actions";
+import { actOnWorkItem, suppressOriginatorAction, unsuppressOriginatorAction } from "./actions";
 
 export const dynamic = "force-dynamic";
 
@@ -105,17 +105,36 @@ function safeHref(url: string | undefined): string | undefined {
 
 function ActionButtons({ item }: { item: WorkItem }) {
   return (
-    <div className="actions">
-      {(["acted", "snoozed", "dismissed"] as const).map((action) => (
-        <form action={actOnWorkItem} key={action}>
+    <div className="card__actions">
+      <div className="actions">
+        {(["acted", "snoozed", "dismissed"] as const).map((action) => (
+          <form action={actOnWorkItem} key={action}>
+            <input type="hidden" name="workItemId" value={item.id} />
+            <input type="hidden" name="action" value={action} />
+            <input type="hidden" name="revision" value={item.attentionRevision} />
+            <button type="submit" className={`action action--${action}`}>
+              {action === "acted" ? "Handled" : action === "snoozed" ? "Later" : "Not important"}
+            </button>
+          </form>
+        ))}
+      </div>
+      {item.suppressionCandidate ? (
+        <form action={suppressOriginatorAction} className="actions__suppress">
           <input type="hidden" name="workItemId" value={item.id} />
-          <input type="hidden" name="action" value={action} />
           <input type="hidden" name="revision" value={item.attentionRevision} />
-          <button type="submit" className={`action action--${action}`}>
-            {action === "acted" ? "Handled" : action === "snoozed" ? "Later" : "Not now"}
+          {item.suppressionCandidate.expectedSuppressionHeadEventId ? (
+            <input
+              type="hidden"
+              name="expectedSuppressionHeadEventId"
+              value={item.suppressionCandidate.expectedSuppressionHeadEventId}
+            />
+          ) : null}
+          <button type="submit" className="action action--suppress">
+            Don't show future work from {item.suppressionCandidate.displayName} (
+            {item.suppressionCandidate.originator.namespace}: {item.suppressionCandidate.originator.id})
           </button>
         </form>
-      ))}
+      ) : null}
     </div>
   );
 }
@@ -211,6 +230,27 @@ export default async function Page({
           {view.canWait.map((item) => (
             <Card key={item.id} item={item} muted />
           ))}
+        </section>
+      ) : null}
+
+      {view.suppressedOriginators.length > 0 ? (
+        <section className="section">
+          <h2 className="section__label section__label--muted">Muted senders & originators</h2>
+          <ul className="muted-list">
+            {view.suppressedOriginators.map((suppressed) => (
+              <li key={suppressed.suppressionEventId} className="muted-item">
+                <span>
+                  {suppressed.originator.namespace}: {suppressed.originator.id}
+                </span>
+                <form action={unsuppressOriginatorAction}>
+                  <input type="hidden" name="suppressionEventId" value={suppressed.suppressionEventId} />
+                  <button type="submit" className="action action--unmute">
+                    Unmute
+                  </button>
+                </form>
+              </li>
+            ))}
+          </ul>
         </section>
       ) : null}
 

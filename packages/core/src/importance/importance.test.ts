@@ -410,6 +410,37 @@ describe("personalImportanceProjection: folding (#65)", () => {
     const state = foldImportance([...history(gmail, "g"), ...history(github, "h")]);
     expect(importanceFor(state, gmail)).toBe(importanceFor(state, github));
   });
+
+  it("ignores OriginatorSuppressed and OriginatorUnsuppressed events (no importance score effect)", () => {
+    const supEvent = makeEvent({
+      id: "sup-1",
+      type: EventTypes.OriginatorSuppressed,
+      source: "user",
+      payload: { originator: DANA },
+    });
+    const unsupEvent = makeEvent({
+      id: "unsup-1",
+      type: EventTypes.OriginatorUnsuppressed,
+      source: "user",
+      payload: { originator: DANA, suppressionEventId: "sup-1" },
+    });
+
+    const state = foldImportance([supEvent, unsupEvent]);
+    expect(state.byOriginator[originatorKey(DANA)]).toBeUndefined();
+    expect(importanceFor(state, DANA)).toBe(NEUTRAL_IMPORTANCE);
+  });
+
+  it("proves one 'Not important' dismissal remains neutral and two dismissals move below neutral (#83)", () => {
+    const oneDismissal = foldImportance([action(EventTypes.WorkItemDismissed, "act-1", DANA)]);
+    expect(importanceFor(oneDismissal, DANA)).toBe(NEUTRAL_IMPORTANCE);
+
+    const twoDismissals = foldImportance([
+      action(EventTypes.WorkItemDismissed, "act-1", DANA),
+      action(EventTypes.WorkItemDismissed, "act-2", DANA),
+    ]);
+    expect(importanceFor(twoDismissals, DANA)).toBeLessThan(NEUTRAL_IMPORTANCE);
+    expect(importanceFor(twoDismissals, DANA)).toBeCloseTo(0.25, 10);
+  });
 });
 
 // --- importanceContributionFor: the plain data prioritize() actually sees -----

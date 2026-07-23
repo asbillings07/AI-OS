@@ -10,6 +10,8 @@ import {
   personalImportanceProjection,
   buildWorkItems,
   buildActionEvent,
+  buildSuppressOriginatorEvent,
+  buildUnsuppressOriginatorEvent,
   createLogger,
   latestThreadMessage,
   LogEvents,
@@ -17,7 +19,9 @@ import {
   type AttentionState,
   type ContextState,
   type Logger,
+  type OriginatorRef,
   type PersonalImportanceState,
+  type SuppressedOriginator,
   type WorkItem,
   type WorkItemAction,
 } from "@orion/core";
@@ -104,6 +108,7 @@ function getService(): Promise<OrionService> {
 export interface MissionControlView {
   needsAttention: WorkItem[];
   canWait: WorkItem[];
+  suppressedOriginators: SuppressedOriginator[];
   generatedAt: string;
   providerName: string;
   gmail: GmailIntegrationState;
@@ -161,6 +166,7 @@ export async function readMissionControl(): Promise<MissionControlView> {
   return {
     needsAttention: enriched.filter((item) => item.band === "needs_attention"),
     canWait: enriched.filter((item) => item.band === "can_wait"),
+    suppressedOriginators: Object.values(attention.state.suppressedOriginators ?? {}),
     generatedAt: now,
     providerName: ai.providerName,
     gmail,
@@ -217,6 +223,55 @@ export async function recordAction(
   // was recorded if persistence threw or the decision recorded nothing.
   if (recorded) {
     logger.event(LogEvents.UserActionRecorded, { action, workItemId });
+  }
+  return recorded;
+}
+
+export async function recordOriginatorSuppression(
+  workItemId: string,
+  revision: string,
+  expectedSuppressionHeadEventId?: string,
+  reason?: string,
+): Promise<boolean> {
+  const { runtime, context, attention, importance, logger } = await getService();
+
+  const recorded = await runtime.recordExclusive(() =>
+    buildSuppressOriginatorEvent({
+      context: context.state,
+      attention: attention.state,
+      importance: importance.state,
+      now: new Date().toISOString(),
+      workItemId,
+      revision,
+      expectedSuppressionHeadEventId,
+      reason,
+      logger,
+    }),
+  );
+
+  if (recorded) {
+    logger.event(LogEvents.UserActionRecorded, { action: "suppress_originator", workItemId });
+  }
+  return recorded;
+}
+
+export async function recordOriginatorUnsuppression(
+  suppressionEventId: string,
+  reason?: string,
+): Promise<boolean> {
+  const { runtime, attention, logger } = await getService();
+
+  const recorded = await runtime.recordExclusive(() =>
+    buildUnsuppressOriginatorEvent({
+      attention: attention.state,
+      now: new Date().toISOString(),
+      suppressionEventId,
+      reason,
+    }),
+  );
+
+  if (recorded) {
+    logger.event(LogEvents.UserActionRecorded, { action: "unsuppress_originator", suppressionEventId });
   }
   return recorded;
 }

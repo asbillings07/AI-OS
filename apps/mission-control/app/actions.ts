@@ -1,7 +1,13 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { recordAction, WORK_ITEM_ACTIONS, type WorkItemAction } from "../lib/orion";
+import {
+  recordAction,
+  recordOriginatorSuppression,
+  recordOriginatorUnsuppression,
+  WORK_ITEM_ACTIONS,
+  type WorkItemAction,
+} from "../lib/orion";
 
 function isWorkItemAction(value: string): value is WorkItemAction {
   return (WORK_ITEM_ACTIONS as readonly string[]).includes(value);
@@ -26,5 +32,33 @@ export async function actOnWorkItem(formData: FormData): Promise<void> {
   await recordAction(workItemId, action, revision);
   // Revalidate regardless: if the item was already resolved elsewhere, this
   // refreshes the view to current truth rather than failing silently.
+  revalidatePath("/");
+}
+
+export async function suppressOriginatorAction(formData: FormData): Promise<void> {
+  const workItemId = String(formData.get("workItemId") ?? "");
+  const revision = String(formData.get("revision") ?? "");
+  const expectedSuppressionHeadEventId = formData.get("expectedSuppressionHeadEventId")
+    ? String(formData.get("expectedSuppressionHeadEventId"))
+    : undefined;
+  const reason = formData.get("reason") ? String(formData.get("reason")) : undefined;
+
+  if (!workItemId || !revision) {
+    return;
+  }
+
+  await recordOriginatorSuppression(workItemId, revision, expectedSuppressionHeadEventId, reason);
+  revalidatePath("/");
+}
+
+export async function unsuppressOriginatorAction(formData: FormData): Promise<void> {
+  const suppressionEventId = String(formData.get("suppressionEventId") ?? "");
+  const reason = formData.get("reason") ? String(formData.get("reason")) : undefined;
+
+  if (!suppressionEventId) {
+    return;
+  }
+
+  await recordOriginatorUnsuppression(suppressionEventId, reason);
   revalidatePath("/");
 }
