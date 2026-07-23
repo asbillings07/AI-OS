@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { makeEvent } from "../events/index.js";
-import { EventTypes, type MessageReceivedPayload } from "../domain/index.js";
+import { EventTypes, type MessageReceivedPayload, type MessageSentPayload } from "../domain/index.js";
 import { contextProjection, type ContextState } from "./context.js";
 import { detectSignals } from "./signals.js";
 import { timelineProjection } from "./timeline.js";
@@ -16,6 +16,19 @@ function message(overrides: Partial<MessageReceivedPayload> & { threadId: string
     ...overrides,
   };
   return makeEvent({ type: EventTypes.MessageReceived, source: "gmail-skill", payload, id: `evt-${payload.messageId}` });
+}
+
+function sentMessage(overrides: Partial<MessageSentPayload> & { threadId: string; messageId: string }) {
+  const payload: MessageSentPayload = {
+    from: { name: "Me", address: "me@orion.dev" },
+    to: [{ name: "Dana Lee", address: "dana@acme.com" }],
+    subject: "Re: Quick question",
+    snippet: "Here is the feedback.",
+    body: "Looks good!",
+    sentAt: "2026-07-15T10:00:00.000Z",
+    ...overrides,
+  };
+  return makeEvent({ type: EventTypes.MessageSent, source: "gmail-skill", payload, id: `evt-sent-${payload.messageId}` });
 }
 
 function fold(events: ReturnType<typeof message>[]): ContextState {
@@ -36,12 +49,55 @@ describe("Context projection (ADR-0005)", () => {
   });
 
   it("builds Person relationship counts across threads", () => {
-    const context = fold([
+    const context = [
       message({ threadId: "t1", messageId: "m1" }),
       message({ threadId: "t2", messageId: "m2", subject: "Another" }),
-    ]);
+      sentMessage({ threadId: "t1", messageId: "s1" }),
+    ].reduce((state, event) => contextProjection.apply(state, event), contextProjection.init());
+
     expect(context.people["dana@acme.com"]?.inboundCount).toBe(2);
-    expect(context.people["dana@acme.com"]?.outboundCount).toBe(0);
+    expect(context.people["dana@acme.com"]?.outboundCount).toBe(1);
+    expect(context.people["dana@acme.com"]?.inboundEventIds).toEqual(["evt-m1", "evt-m2"]);
+    expect(context.people["dana@acme.com"]?.outboundEventIds).toEqual(["evt-sent-s1"]);
+  });
+
+  it("deduplicates recipients per message and excludes self-addressed mail", () => {
+    const context = [
+      sentMessage({
+        threadId: "t1",
+        messageId: "s1",
+        from: { address: "me@orion.dev" },
+        to: [
+          { address: "dana@acme.com", name: "Dana" },
+          { address: "DANA@ACME.COM" }, // duplicate
+          { address: "me@orion.dev" }, // self-addressed
+          { address: " " }, // empty
+        ],
+      }),
+    ].reduce((state, event) => contextProjection.apply(state, event), contextProjection.init());
+
+    expect(context.people["dana@acme.com"]?.outboundCount).toBe(1);
+    expect(context.people["dana@acme.com"]?.name).toBe("Dana");
+    expect(context.people["me@orion.dev"]).toBeUndefined();
+  });
+
+  it("updates timestamps using domain occurrence time rather than append order", () => {
+    // Late-arriving older message appended after a newer one
+    const newer = message({ threadId: "t1", messageId: "m2", receivedAt: "2026-07-15T12:00:00.000Z" });
+    const older = message({ threadId: "t1", messageId: "m1", receivedAt: "2026-07-15T08:00:00.000Z" });
+
+    const context = [newer, older].reduce(
+      (state, event) => contextProjection.apply(state, event),
+      contextProjection.init(),
+    );
+
+    const thread = context.threads.t1!;
+    expect(thread.firstMessageAt).toBe("2026-07-15T08:00:00.000Z");
+    expect(thread.lastMessageAt).toBe("2026-07-15T12:00:00.000Z");
+
+    const person = context.people["dana@acme.com"]!;
+    expect(person.firstSeenAt).toBe("2026-07-15T08:00:00.000Z");
+    expect(person.lastSeenAt).toBe("2026-07-15T12:00:00.000Z");
   });
 
   it("marks a thread handled when the user acts on it", () => {
@@ -76,23 +132,42 @@ describe("Signal detection (deterministic)", () => {
     expect(kinds).not.toContain("FromKnownPerson");
   });
 
-  it("emits FromKnownPerson when two-way exchange exists in synthetic state", () => {
-    const baseContext = fold([message({ threadId: "t1", messageId: "m1" })]);
-    const context: ContextState = {
-      ...baseContext,
-      people: {
-        ...baseContext.people,
-        "dana@acme.com": {
-          ...baseContext.people["dana@acme.com"]!,
-          inboundCount: 1,
-          outboundCount: 1,
-        },
-      },
-    };
-    const signal = detectSignals(context, "2026-07-15T12:00:00.000Z").find((s) => s.kind === "FromKnownPerson");
-    expect(signal).toBeDefined();
-    expect(signal?.strength).toBeCloseTo(0.55, 5);
-    expect(signal?.evidence).toBe("You've exchanged messages with Dana Lee.");
+  it("suppresses all reply-needed signals when latest message is outbound", () => {
+    const inbound = message({ threadId: "t1", messageId: "m1", body: "Can you review this?", receivedAt: "2026-07-13T09:00:00.000Z" });
+    const outbound = sentMessage({ threadId: "t1", messageId: "s1", body: "All done!", sentAt: "2026-07-13T10:00:00.000Z" });
+
+    const context = [inbound, outbound].reduce(
+      (state, event) => contextProjection.apply(state, event),
+      contextProjection.init(),
+    );
+
+    const signals = detectSignals(context, "2026-07-15T12:00:00.000Z");
+    const kinds = signals.map((s) => s.kind);
+
+    expect(kinds).not.toContain("AwaitingReply");
+    expect(kinds).not.toContain("DirectQuestion");
+    expect(kinds).not.toContain("Aging");
+  });
+
+  it("resurfaces reply-needed signals when a newer inbound message arrives after outbound", () => {
+    const inbound1 = message({ threadId: "t1", messageId: "m1", receivedAt: "2026-07-13T09:00:00.000Z" });
+    const outbound = sentMessage({ threadId: "t1", messageId: "s1", sentAt: "2026-07-13T10:00:00.000Z" });
+    const inbound2 = message({ threadId: "t1", messageId: "m2", body: "Thanks! One more question?", receivedAt: "2026-07-14T09:00:00.000Z" });
+
+    const context = [inbound1, outbound, inbound2].reduce(
+      (state, event) => contextProjection.apply(state, event),
+      contextProjection.init(),
+    );
+
+    const signals = detectSignals(context, "2026-07-15T12:00:00.000Z");
+    const kinds = signals.map((s) => s.kind);
+
+    expect(kinds).toContain("AwaitingReply");
+    expect(kinds).toContain("DirectQuestion");
+    expect(kinds).toContain("FromKnownPerson");
+
+    const knownPerson = signals.find((s) => s.kind === "FromKnownPerson")!;
+    expect(knownPerson.sourceEventIds).toEqual(["evt-m1", "evt-sent-s1", "evt-m2"]);
   });
 
   it("classifies automated senders as LikelyLowValue and nothing else", () => {

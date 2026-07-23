@@ -1,5 +1,9 @@
-import type { EmailAddress, MessageReceivedPayload } from "@orion/core";
+import type { EmailAddress, MessageReceivedPayload, MessageSentPayload } from "@orion/core";
 import type { RawGmailMessage, RawGmailHeader } from "@orion/fixtures";
+
+export type NormalizedGmailMessage =
+  | { direction: "received"; payload: MessageReceivedPayload }
+  | { direction: "sent"; payload: MessageSentPayload };
 
 function headerValue(headers: RawGmailHeader[], name: string): string | undefined {
   return headers.find((header) => header.name.toLowerCase() === name.toLowerCase())?.value;
@@ -74,21 +78,51 @@ function receivedAt(message: RawGmailMessage): string {
 }
 
 /**
- * Normalize a Gmail-shaped message into the domain's MessageReceived payload.
+ * Normalize a Gmail-shaped message into the domain's MessageReceived or MessageSent payload.
+ *
+ * Precedence Rule: If `message.labelIds` includes `"SENT"`, normalize as `direction: "sent"`
+ * (even if `INBOX` is also present, e.g. self-addressed mail). Otherwise `direction: "received"`.
+ *
  * This is where the vendor shape stops: everything downstream sees only domain
  * concepts (Eng #8, ADR-0010). The Skill disappears.
  */
-export function normalizeGmailMessage(message: RawGmailMessage): MessageReceivedPayload {
+export function normalizeGmailMessage(message: RawGmailMessage): NormalizedGmailMessage {
   const headers = message.payload.headers;
   const from = parseAddress(headerValue(headers, "From") ?? "unknown@unknown");
+  const to = parseAddressList(headerValue(headers, "To"));
+  const subject = headerValue(headers, "Subject") ?? "(no subject)";
+  const snippet = message.snippet;
+  const body = decodePlainTextBody(message);
+  const timeIso = receivedAt(message);
+
+  const isSent = message.labelIds?.includes("SENT") ?? false;
+  if (isSent) {
+    return {
+      direction: "sent",
+      payload: {
+        messageId: message.id,
+        threadId: message.threadId,
+        from,
+        to,
+        subject,
+        snippet,
+        body,
+        sentAt: timeIso,
+      },
+    };
+  }
+
   return {
-    messageId: message.id,
-    threadId: message.threadId,
-    from,
-    to: parseAddressList(headerValue(headers, "To")),
-    subject: headerValue(headers, "Subject") ?? "(no subject)",
-    snippet: message.snippet,
-    body: decodePlainTextBody(message),
-    receivedAt: receivedAt(message),
+    direction: "received",
+    payload: {
+      messageId: message.id,
+      threadId: message.threadId,
+      from,
+      to,
+      subject,
+      snippet,
+      body,
+      receivedAt: timeIso,
+    },
   };
 }

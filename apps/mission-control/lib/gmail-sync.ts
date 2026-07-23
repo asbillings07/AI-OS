@@ -73,7 +73,7 @@ async function runSync(runtime: OrionRuntime, logger: Logger): Promise<GmailSync
       (onTrace) =>
         new LiveGmailSource({
           tokenProvider: service,
-          query: "in:inbox newer_than:7d",
+          query: "(in:inbox OR in:sent) newer_than:7d",
           maxMessages: 100,
           onTrace,
         }),

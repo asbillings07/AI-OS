@@ -3,10 +3,13 @@ import {
   EventTypes,
   type OrionRuntime,
   type MessageReceivedEvent,
+  type MessageSentEvent,
   type SkillManifest,
 } from "@orion/core";
 import { FixtureGmailSource, type GmailSource } from "./source.js";
 import { normalizeGmailMessage } from "./normalize.js";
+
+export type IngestedGmailEvent = MessageReceivedEvent | MessageSentEvent;
 
 /**
  * What the Gmail Skill declares to the platform (ADR-0010): its identity, the
@@ -15,7 +18,7 @@ import { normalizeGmailMessage } from "./normalize.js";
 export const gmailManifest = {
   id: "gmail",
   source: "gmail-skill",
-  produces: [EventTypes.MessageReceived],
+  produces: [EventTypes.MessageReceived, EventTypes.MessageSent],
   consumes: [],
 } as const satisfies SkillManifest;
 
@@ -46,22 +49,37 @@ export class GmailSkill {
   }
 
   /** Fetch, normalize, and record all messages as domain events. */
-  async ingest(runtime: OrionRuntime): Promise<MessageReceivedEvent[]> {
+  async ingest(runtime: OrionRuntime): Promise<IngestedGmailEvent[]> {
     const rawMessages = await this.#source.fetchMessages();
-    const events: MessageReceivedEvent[] = [];
+    const events: IngestedGmailEvent[] = [];
 
     for (const raw of rawMessages) {
-      const payload = normalizeGmailMessage(raw);
-      const event = makeEvent({
-        type: EventTypes.MessageReceived,
-        source: this.manifest.source,
-        payload,
-        // Deterministic id from the message id -> idempotent ingestion.
-        id: `gmail:${payload.messageId}`,
-        occurredAt: payload.receivedAt,
-      }) as MessageReceivedEvent;
-      await runtime.record(event);
-      events.push(event);
+      const normalized = normalizeGmailMessage(raw);
+      if (normalized.direction === "sent") {
+        const payload = normalized.payload;
+        const event = makeEvent({
+          type: EventTypes.MessageSent,
+          source: this.manifest.source,
+          payload,
+          // Deterministic id for sent events -> idempotent ingestion.
+          id: `gmail:sent:${payload.messageId}`,
+          occurredAt: payload.sentAt,
+        }) as MessageSentEvent;
+        await runtime.record(event);
+        events.push(event);
+      } else {
+        const payload = normalized.payload;
+        const event = makeEvent({
+          type: EventTypes.MessageReceived,
+          source: this.manifest.source,
+          payload,
+          // Deterministic id from the message id -> idempotent ingestion.
+          id: `gmail:${payload.messageId}`,
+          occurredAt: payload.receivedAt,
+        }) as MessageReceivedEvent;
+        await runtime.record(event);
+        events.push(event);
+      }
     }
 
     return events;

@@ -7,6 +7,7 @@ import {
   type CheckFailedPayload,
   type EmailAddress,
   type MessageReceivedPayload,
+  type MessageSentPayload,
   type ReviewRequestedPayload,
   type WorkItemActionPayload,
   isCurrentActionPayload,
@@ -16,11 +17,12 @@ import { checkSubjectId } from "../subject/index.js";
 /** A message as remembered inside Context, with a link back to its Event. */
 export interface ObservedMessage {
   messageId: string;
+  direction: "inbound" | "outbound";
   from: EmailAddress;
   subject: string;
   snippet: string;
   body: string;
-  receivedAt: string;
+  occurredAt: string;
   /** The Event this fact came from — the root of any Explanation (ADR-0005). */
   eventId: string;
   /**
@@ -40,11 +42,11 @@ export interface ThreadContext {
   subject: string;
   participants: string[];
   messages: ObservedMessage[];
-  firstReceivedAt: string;
-  lastReceivedAt: string;
+  firstMessageAt: string;
+  lastMessageAt: string;
   /**
    * The Event whose occurrence currently supplies the thread's display/attention
-   * fields — the NEWEST inbound message by domain timestamp (Event-id tie-break),
+   * fields — the NEWEST message by domain timestamp (Event-id tie-break),
    * never simply the last array element. A delayed poll can append an *older*
    * message; that grows `messages` for provenance but must not become the current
    * revision. Mirrors the OccurrenceContext contract used by collaborative work.
@@ -75,6 +77,8 @@ export interface PersonContext {
   name?: string;
   inboundCount: number;
   outboundCount: number;
+  inboundEventIds: string[];
+  outboundEventIds: string[];
   firstSeenAt: string;
   lastSeenAt: string;
 }
@@ -231,6 +235,30 @@ function applyAssignmentReceived(state: ContextState, event: EventEnvelope): Con
   return { ...state, assignments: { ...state.assignments, [key]: assignment } };
 }
 
+function updateTimestampBounds(
+  currentFirst: string | undefined,
+  currentLast: string | undefined,
+  incomingAt: string,
+): { firstSeenAt: string; lastSeenAt: string } {
+  if (!currentFirst || !currentLast) {
+    return { firstSeenAt: incomingAt, lastSeenAt: incomingAt };
+  }
+  const incomingTime = new Date(incomingAt).getTime();
+  const firstTime = new Date(currentFirst).getTime();
+  const lastTime = new Date(currentLast).getTime();
+
+  const firstSeenAt =
+    Number.isFinite(incomingTime) && Number.isFinite(firstTime) && incomingTime < firstTime
+      ? incomingAt
+      : currentFirst;
+
+  const lastSeenAt =
+    Number.isFinite(incomingTime) && Number.isFinite(lastTime) && incomingTime > lastTime
+      ? incomingAt
+      : currentLast;
+
+  return { firstSeenAt, lastSeenAt };
+}
 function applyCheckFailed(state: ContextState, event: EventEnvelope): ContextState {
   const payload = event.payload as CheckFailedPayload;
   const key = checkSubjectId(payload.changeId, payload.checkName);
@@ -260,11 +288,12 @@ function applyMessageReceived(state: ContextState, event: EventEnvelope): Contex
 
   const message: ObservedMessage = {
     messageId: payload.messageId,
+    direction: "inbound",
     from: payload.from,
     subject: payload.subject,
     snippet: payload.snippet,
     body: payload.body,
-    receivedAt: payload.receivedAt,
+    occurredAt: payload.receivedAt,
     eventId: event.id,
     source: event.source,
   };
@@ -275,12 +304,18 @@ function applyMessageReceived(state: ContextState, event: EventEnvelope): Contex
     participants.add(recipient.address);
   }
 
-  // The incoming message becomes the current revision only if its occurrence wins
-  // by domain time (Event-id tie-break) — so a backfilled older message is kept for
-  // provenance but does not change the display fields or the attention basis.
+  const currentLastAt = existing?.lastMessageAt;
+  const currentFirstAt = existing?.firstMessageAt;
+
   const incomingWins =
     !existing ||
-    occurrenceWins(payload.receivedAt, event.id, existing.lastReceivedAt, existing.latestMessageEventId);
+    occurrenceWins(payload.receivedAt, event.id, currentLastAt!, existing.latestMessageEventId);
+
+  const firstMessageAt = !existing
+    ? payload.receivedAt
+    : occurrenceWins(currentFirstAt!, "", payload.receivedAt, "")
+      ? payload.receivedAt
+      : currentFirstAt!;
 
   const thread: ThreadContext = existing
     ? {
@@ -288,7 +323,8 @@ function applyMessageReceived(state: ContextState, event: EventEnvelope): Contex
         subject: existing.subject || payload.subject,
         participants: [...participants],
         messages: [...existing.messages, message],
-        lastReceivedAt: incomingWins ? payload.receivedAt : existing.lastReceivedAt,
+        firstMessageAt,
+        lastMessageAt: incomingWins ? payload.receivedAt : currentLastAt!,
         latestMessageEventId: incomingWins ? event.id : existing.latestMessageEventId,
         // A new inbound message reopens a handled or snoozed thread the user had
         // put down. Dismissed is a durable mute — the user said this isn't worth
@@ -302,34 +338,141 @@ function applyMessageReceived(state: ContextState, event: EventEnvelope): Contex
         subject: payload.subject,
         participants: [...participants],
         messages: [message],
-        firstReceivedAt: payload.receivedAt,
-        lastReceivedAt: payload.receivedAt,
+        firstMessageAt: payload.receivedAt,
+        lastMessageAt: payload.receivedAt,
         latestMessageEventId: event.id,
         status: "open",
       };
 
   const person = state.people[payload.from.address];
+  const bounds = updateTimestampBounds(person?.firstSeenAt, person?.lastSeenAt, payload.receivedAt);
   const updatedPerson: PersonContext = person
     ? {
         ...person,
         name: person.name ?? payload.from.name,
         inboundCount: (person.inboundCount ?? 0) + 1,
         outboundCount: person.outboundCount ?? 0,
-        lastSeenAt: payload.receivedAt,
+        inboundEventIds: withEventId(person.inboundEventIds, event.id),
+        outboundEventIds: person.outboundEventIds ?? [],
+        firstSeenAt: bounds.firstSeenAt,
+        lastSeenAt: bounds.lastSeenAt,
       }
     : {
         address: payload.from.address,
         name: payload.from.name,
         inboundCount: 1,
         outboundCount: 0,
-        firstSeenAt: payload.receivedAt,
-        lastSeenAt: payload.receivedAt,
+        inboundEventIds: [event.id],
+        outboundEventIds: [],
+        firstSeenAt: bounds.firstSeenAt,
+        lastSeenAt: bounds.lastSeenAt,
       };
 
   return {
     ...state,
     threads: { ...state.threads, [payload.threadId]: thread },
     people: { ...state.people, [payload.from.address]: updatedPerson },
+  };
+}
+
+function applyMessageSent(state: ContextState, event: EventEnvelope): ContextState {
+  const payload = event.payload as MessageSentPayload;
+  const existing = state.threads[payload.threadId];
+
+  const message: ObservedMessage = {
+    messageId: payload.messageId,
+    direction: "outbound",
+    from: payload.from,
+    subject: payload.subject,
+    snippet: payload.snippet,
+    body: payload.body,
+    occurredAt: payload.sentAt,
+    eventId: event.id,
+    source: event.source,
+  };
+
+  const participants = new Set(existing?.participants ?? []);
+  participants.add(payload.from.address);
+  for (const recipient of payload.to) {
+    participants.add(recipient.address);
+  }
+
+  const currentLastAt = existing?.lastMessageAt;
+  const currentFirstAt = existing?.firstMessageAt;
+
+  const incomingWins =
+    !existing ||
+    occurrenceWins(payload.sentAt, event.id, currentLastAt!, existing.latestMessageEventId);
+
+  const firstMessageAt = !existing
+    ? payload.sentAt
+    : occurrenceWins(currentFirstAt!, "", payload.sentAt, "")
+      ? payload.sentAt
+      : currentFirstAt!;
+
+  const thread: ThreadContext = existing
+    ? {
+        ...existing,
+        subject: existing.subject || payload.subject,
+        participants: [...participants],
+        messages: [...existing.messages, message],
+        firstMessageAt,
+        lastMessageAt: incomingWins ? payload.sentAt : currentLastAt!,
+        latestMessageEventId: incomingWins ? event.id : existing.latestMessageEventId,
+        status: existing.status,
+        snoozedUntil: existing.snoozedUntil,
+      }
+    : {
+        threadId: payload.threadId,
+        subject: payload.subject,
+        participants: [...participants],
+        messages: [message],
+        firstMessageAt: payload.sentAt,
+        lastMessageAt: payload.sentAt,
+        latestMessageEventId: event.id,
+        status: "open",
+      };
+
+  const senderAddress = payload.from.address.trim().toLowerCase();
+  const recipientMap = new Map<string, EmailAddress>();
+  for (const recipient of payload.to) {
+    const addr = recipient.address.trim().toLowerCase();
+    if (addr.length > 0 && addr !== senderAddress && !recipientMap.has(addr)) {
+      recipientMap.set(addr, { ...recipient, address: addr });
+    }
+  }
+
+  const updatedPeople = { ...state.people };
+  for (const [address, recipient] of recipientMap) {
+    const person = updatedPeople[address];
+    const bounds = updateTimestampBounds(person?.firstSeenAt, person?.lastSeenAt, payload.sentAt);
+    updatedPeople[address] = person
+      ? {
+          ...person,
+          name: person.name ?? recipient.name,
+          inboundCount: person.inboundCount ?? 0,
+          outboundCount: (person.outboundCount ?? 0) + 1,
+          inboundEventIds: person.inboundEventIds ?? [],
+          outboundEventIds: withEventId(person.outboundEventIds, event.id),
+          firstSeenAt: bounds.firstSeenAt,
+          lastSeenAt: bounds.lastSeenAt,
+        }
+      : {
+          address,
+          name: recipient.name,
+          inboundCount: 0,
+          outboundCount: 1,
+          inboundEventIds: [],
+          outboundEventIds: [event.id],
+          firstSeenAt: bounds.firstSeenAt,
+          lastSeenAt: bounds.lastSeenAt,
+        };
+  }
+
+  return {
+    ...state,
+    threads: { ...state.threads, [payload.threadId]: thread },
+    people: updatedPeople,
   };
 }
 
@@ -376,6 +519,8 @@ export const contextProjection: Projection<ContextState> = {
     switch (event.type) {
       case EventTypes.MessageReceived:
         return applyMessageReceived(state, event);
+      case EventTypes.MessageSent:
+        return applyMessageSent(state, event);
       case EventTypes.ReviewRequested:
         return applyReviewRequested(state, event);
       case EventTypes.AssignmentReceived:

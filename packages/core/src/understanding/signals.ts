@@ -45,6 +45,16 @@ function threadEventIds(thread: ThreadContext): string[] {
   return thread.messages.map((message) => message.eventId);
 }
 
+function stableDedupe(ids: string[]): string[] {
+  const result: string[] = [];
+  for (const id of ids) {
+    if (id && !result.includes(id)) {
+      result.push(id);
+    }
+  }
+  return result;
+}
+
 /**
  * Derive Signals from Context. Pure and deterministic given `now`, which is
  * passed in (never read from the clock) so replay and tests are reproducible.
@@ -60,63 +70,88 @@ export function detectSignals(context: ContextState, now: string): Signal[] {
   for (const thread of Object.values(context.threads)) {
     const subject: SubjectRef = { kind: "thread", id: thread.threadId };
     const eventIds = threadEventIds(thread);
-    // The "current" sender is the newest occurrence's, not the last appended one.
-    const lastSender = latestThreadMessage(thread)?.from.address ?? "";
-    const automated = isAutomatedSender(lastSender);
+    const latestMsg = latestThreadMessage(thread);
 
-    if (automated) {
-      signals.push({
-        kind: "LikelyLowValue",
-        subject,
-        strength: 0.8,
-        evidence: `From an automated sender (${lastSender}).`,
-        sourceEventIds: eventIds,
-      });
+    if (!latestMsg) {
       continue;
     }
 
-    signals.push({
-      kind: "AwaitingReply",
-      subject,
-      strength: 1,
-      evidence: "You have not replied to this conversation.",
-      sourceEventIds: eventIds,
-    });
+    const isOutbound = latestMsg.direction === "outbound";
 
-    const text = thread.messages.map((m) => `${m.subject} ${m.body}`).join("\n");
-    if (QUESTION_PATTERN.test(text)) {
+    // When the latest occurrence in the thread is outbound, the user sent the last message.
+    // Whole-obligation suppression: emit no reply-needed conversational signals
+    // (AwaitingReply, DirectQuestion, Aging).
+    if (!isOutbound) {
+      const lastSender = latestMsg.from.address;
+      const automated = isAutomatedSender(lastSender);
+
+      if (automated) {
+        signals.push({
+          kind: "LikelyLowValue",
+          subject,
+          strength: 0.8,
+          evidence: `From an automated sender (${lastSender}).`,
+          sourceEventIds: eventIds,
+        });
+        continue;
+      }
+
       signals.push({
-        kind: "DirectQuestion",
+        kind: "AwaitingReply",
         subject,
-        strength: 0.85,
-        evidence: "The message asks a direct question.",
+        strength: 1,
+        evidence: "You have not replied to this conversation.",
         sourceEventIds: eventIds,
       });
-    }
 
-    const person = context.people[lastSender];
-    if (person) {
-      const exchangedCount = Math.min(person.inboundCount ?? 0, person.outboundCount ?? 0);
-      if (exchangedCount > 0) {
+      // DirectQuestion scans only the latest inbound message, not the whole conversation history
+      const latestInboundText = `${latestMsg.subject} ${latestMsg.body}`;
+      if (QUESTION_PATTERN.test(latestInboundText)) {
         signals.push({
-          kind: "FromKnownPerson",
+          kind: "DirectQuestion",
           subject,
-          strength: Math.min(1, 0.4 + exchangedCount * 0.15),
-          evidence: `You've exchanged messages with ${person.name ?? lastSender}.`,
+          strength: 0.85,
+          evidence: "The message asks a direct question.",
+          sourceEventIds: eventIds,
+        });
+      }
+
+      // Aging is calculated from the latest inbound message's occurrence time
+      const age = hoursBetween(latestMsg.occurredAt, now);
+      if (age >= AGING_HOURS) {
+        signals.push({
+          kind: "Aging",
+          subject,
+          strength: Math.min(1, age / (AGING_HOURS * 3)),
+          evidence: `Waiting for ${Math.floor(age / 24)} day(s).`,
           sourceEventIds: eventIds,
         });
       }
     }
 
-    const age = hoursBetween(thread.lastReceivedAt, now);
-    if (age >= AGING_HOURS) {
-      signals.push({
-        kind: "Aging",
-        subject,
-        strength: Math.min(1, age / (AGING_HOURS * 3)),
-        evidence: `Waiting for ${Math.floor(age / 24)} day(s).`,
-        sourceEventIds: eventIds,
-      });
+    // FromKnownPerson relationship evaluation
+    const senderAddr = latestMsg.from.address;
+    const personAddress = !isOutbound
+      ? senderAddr
+      : thread.participants.find((addr) => addr !== senderAddr) ?? senderAddr;
+
+    const person = context.people[personAddress];
+    if (person) {
+      const exchangedCount = Math.min(person.inboundCount ?? 0, person.outboundCount ?? 0);
+      if (exchangedCount > 0) {
+        const combinedEventIds = stableDedupe([
+          ...eventIds,
+          ...(person.inboundEventIds ?? []),
+          ...(person.outboundEventIds ?? []),
+        ]);
+        signals.push({
+          kind: "FromKnownPerson",
+          subject,
+          strength: Math.min(1, 0.4 + exchangedCount * 0.15),
+          evidence: `You've exchanged messages with ${person.name ?? personAddress}.`,
+          sourceEventIds: combinedEventIds,
+        });
+      }
     }
   }
 
