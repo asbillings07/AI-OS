@@ -355,47 +355,106 @@ describe("work-item-actions: durable originator suppression and unsuppression (#
     expect(events[1]?.type).toBe(EventTypes.OriginatorUnsuppressed);
   });
 
-  it("re-suppress after unmute produces new deterministic event ID incorporating previousHeadEventId", async () => {
+  it("enforces expectedSuppressionHeadEventId guard: stale pre-unmute form rejected, fresh post-unmute form succeeds (#83)", async () => {
     const h = harness();
     await h.runtime.record(reviewEvent("r1", "2026-07-15T12:00:00.000Z"));
-    const item = reviewItem(h);
+    const preSuppressItem = reviewItem(h);
+    expect(preSuppressItem.suppressionCandidate?.expectedSuppressionHeadEventId).toBeUndefined();
 
-    // First suppress
-    await h.runtime.recordExclusive(() =>
+    // 1. First suppress using preSuppressItem
+    const suppress1 = await h.runtime.recordExclusive(() =>
       buildSuppressOriginatorEvent({
         context: h.context.state,
         attention: h.attention.state,
         now: NOW,
-        workItemId: item.id,
-        revision: item.attentionRevision,
+        workItemId: preSuppressItem.id,
+        revision: preSuppressItem.attentionRevision,
+        expectedSuppressionHeadEventId: preSuppressItem.suppressionCandidate?.expectedSuppressionHeadEventId,
       }),
     );
+    expect(suppress1).toBe(true);
 
     const activeRule = h.attention.state.suppressedOriginators[JSON.stringify(["github-skill", "dana"])];
+    expect(activeRule).toBeDefined();
 
-    // Unmute
-    await h.runtime.recordExclusive(() =>
+    // 2. Unmute
+    const unmuteResult = await h.runtime.recordExclusive(() =>
       buildUnsuppressOriginatorEvent({
         attention: h.attention.state,
         now: NOW,
         suppressionEventId: activeRule!.suppressionEventId,
       }),
     );
+    expect(unmuteResult).toBe(true);
 
-    // Re-suppress
-    await h.runtime.recordExclusive(() =>
+    // 3. Stale submission attempt using pre-Unmute form (expectedSuppressionHeadEventId = undefined)
+    const staleResult = await h.runtime.recordExclusive(() =>
       buildSuppressOriginatorEvent({
         context: h.context.state,
         attention: h.attention.state,
         now: NOW,
-        workItemId: item.id,
-        revision: item.attentionRevision,
+        workItemId: preSuppressItem.id,
+        revision: preSuppressItem.attentionRevision,
+        expectedSuppressionHeadEventId: preSuppressItem.suppressionCandidate?.expectedSuppressionHeadEventId,
       }),
     );
+    expect(staleResult).toBe(false);
+
+    // 4. Freshly rendered post-Unmute item carrying expectedSuppressionHeadEventId = <unmuteEventId>
+    const postUnmuteItem = reviewItem(h);
+    expect(postUnmuteItem.suppressionCandidate?.expectedSuppressionHeadEventId).toBe(
+      h.attention.state.suppressionHeads[JSON.stringify(["github-skill", "dana"])],
+    );
+
+    // 5. Re-suppress with fresh token succeeds and produces new deterministic event ID
+    const freshResult = await h.runtime.recordExclusive(() =>
+      buildSuppressOriginatorEvent({
+        context: h.context.state,
+        attention: h.attention.state,
+        now: NOW,
+        workItemId: postUnmuteItem.id,
+        revision: postUnmuteItem.attentionRevision,
+        expectedSuppressionHeadEventId: postUnmuteItem.suppressionCandidate?.expectedSuppressionHeadEventId,
+      }),
+    );
+    expect(freshResult).toBe(true);
 
     const suppressEvents = userEvents(h).filter((e) => e.type === EventTypes.OriginatorSuppressed);
     expect(suppressEvents).toHaveLength(2);
     expect(suppressEvents[0]?.id).not.toBe(suppressEvents[1]?.id);
+  });
+
+  it("deduplicates concurrent duplicate suppression submissions", async () => {
+    const h = harness();
+    await h.runtime.record(reviewEvent("r1", "2026-07-15T12:00:00.000Z"));
+    const item = reviewItem(h);
+
+    const results = await Promise.all([
+      h.runtime.recordExclusive(() =>
+        buildSuppressOriginatorEvent({
+          context: h.context.state,
+          attention: h.attention.state,
+          now: NOW,
+          workItemId: item.id,
+          revision: item.attentionRevision,
+          expectedSuppressionHeadEventId: item.suppressionCandidate?.expectedSuppressionHeadEventId,
+        }),
+      ),
+      h.runtime.recordExclusive(() =>
+        buildSuppressOriginatorEvent({
+          context: h.context.state,
+          attention: h.attention.state,
+          now: NOW,
+          workItemId: item.id,
+          revision: item.attentionRevision,
+          expectedSuppressionHeadEventId: item.suppressionCandidate?.expectedSuppressionHeadEventId,
+        }),
+      ),
+    ]);
+
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(userEvents(h)).toHaveLength(1);
+    expect(userEvents(h)[0]?.type).toBe(EventTypes.OriginatorSuppressed);
   });
 });
 

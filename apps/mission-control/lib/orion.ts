@@ -230,6 +230,7 @@ export async function recordAction(
 export async function recordOriginatorSuppression(
   workItemId: string,
   revision: string,
+  expectedSuppressionHeadEventId?: string,
   reason?: string,
 ): Promise<boolean> {
   const { runtime, context, attention, importance, logger } = await getService();
@@ -242,6 +243,7 @@ export async function recordOriginatorSuppression(
       now: new Date().toISOString(),
       workItemId,
       revision,
+      expectedSuppressionHeadEventId,
       reason,
       logger,
     }),

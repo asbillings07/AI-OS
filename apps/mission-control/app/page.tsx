@@ -122,6 +122,13 @@ function ActionButtons({ item }: { item: WorkItem }) {
         <form action={suppressOriginatorAction} className="actions__suppress">
           <input type="hidden" name="workItemId" value={item.id} />
           <input type="hidden" name="revision" value={item.attentionRevision} />
+          {item.suppressionCandidate.expectedSuppressionHeadEventId ? (
+            <input
+              type="hidden"
+              name="expectedSuppressionHeadEventId"
+              value={item.suppressionCandidate.expectedSuppressionHeadEventId}
+            />
+          ) : null}
           <button type="submit" className="action action--suppress">
             Don't show future work from {item.suppressionCandidate.displayName} (
             {item.suppressionCandidate.originator.namespace}: {item.suppressionCandidate.originator.id})

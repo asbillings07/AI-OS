@@ -282,6 +282,7 @@ describe("the decision loop (ADR-0002/0005/0007/0008/0009/0012)", () => {
       now: NOW,
       workItemId: dana2Item!.id,
       revision: dana2Item!.attentionRevision,
+      expectedSuppressionHeadEventId: dana2Item!.suppressionCandidate?.expectedSuppressionHeadEventId,
     });
     expect(suppressEvt).not.toBeNull();
     await runtime.record(suppressEvt!);

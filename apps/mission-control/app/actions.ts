@@ -38,13 +38,16 @@ export async function actOnWorkItem(formData: FormData): Promise<void> {
 export async function suppressOriginatorAction(formData: FormData): Promise<void> {
   const workItemId = String(formData.get("workItemId") ?? "");
   const revision = String(formData.get("revision") ?? "");
+  const expectedSuppressionHeadEventId = formData.get("expectedSuppressionHeadEventId")
+    ? String(formData.get("expectedSuppressionHeadEventId"))
+    : undefined;
   const reason = formData.get("reason") ? String(formData.get("reason")) : undefined;
 
   if (!workItemId || !revision) {
     return;
   }
 
-  await recordOriginatorSuppression(workItemId, revision, reason);
+  await recordOriginatorSuppression(workItemId, revision, expectedSuppressionHeadEventId, reason);
   revalidatePath("/");
 }
 

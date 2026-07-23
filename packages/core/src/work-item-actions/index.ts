@@ -193,6 +193,8 @@ export interface BuildSuppressOriginatorEventInput {
   readonly workItemId: string;
   /** Optimistic-concurrency token for the target work item. */
   readonly revision: string;
+  /** Expected causal head token for originator suppression. */
+  readonly expectedSuppressionHeadEventId?: string;
   readonly reason?: string;
   readonly logger?: Logger;
 }
@@ -200,7 +202,16 @@ export interface BuildSuppressOriginatorEventInput {
 export function buildSuppressOriginatorEvent(
   input: BuildSuppressOriginatorEventInput,
 ): EventEnvelope | null {
-  const { context, attention, importance, now, workItemId, revision, reason } = input;
+  const {
+    context,
+    attention,
+    importance,
+    now,
+    workItemId,
+    revision,
+    expectedSuppressionHeadEventId,
+    reason,
+  } = input;
 
   const surfaced = buildWorkItems({
     context,
@@ -220,8 +231,13 @@ export function buildSuppressOriginatorEvent(
   }
 
   const key = originatorKey(originator);
-  const previousHeadEventId = attention.suppressionHeads?.[key];
-  const id = suppressOriginatorEventId({ originator, previousHeadEventId });
+  const currentHeadEventId = attention.suppressionHeads?.[key];
+
+  if ((expectedSuppressionHeadEventId ?? undefined) !== (currentHeadEventId ?? undefined)) {
+    return null;
+  }
+
+  const id = suppressOriginatorEventId({ originator, previousHeadEventId: currentHeadEventId });
 
   return makeEvent({
     id,

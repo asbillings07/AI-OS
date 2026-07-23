@@ -7,7 +7,7 @@ import type { Signal } from "../understanding/signals.js";
 import { subjectKey, type SubjectRef } from "../subject/index.js";
 import { isVisible, attentionRevision, type AttentionState } from "../attention/index.js";
 import { LogEvents, nullLogger, type Logger } from "../observability/index.js";
-import { type OriginatorRef } from "../domain/index.js";
+import { originatorKey, type OriginatorRef } from "../domain/index.js";
 import {
   importanceContributionFor,
   NEUTRAL_IMPORTANCE,
@@ -32,6 +32,7 @@ export type WorkItemBand = "needs_attention" | "can_wait";
 export interface WorkItemSuppressionCandidate {
   readonly originator: OriginatorRef;
   readonly displayName: string;
+  readonly expectedSuppressionHeadEventId?: string;
 }
 
 /**
@@ -330,9 +331,12 @@ export function buildWorkItems(options: BuildWorkItemsOptions): WorkItem[] {
     if (contribution) importanceBySubject.set(subjectKey(opportunity.subject), contribution);
     const resolved = resolveOriginator(opportunity.subject, context);
     if (resolved) {
+      const key = originatorKey(resolved.originator);
+      const expectedSuppressionHeadEventId = attention.suppressionHeads?.[key];
       suppressionCandidateBySubject.set(subjectKey(opportunity.subject), {
         originator: resolved.originator,
         displayName: resolved.displayName,
+        ...(expectedSuppressionHeadEventId ? { expectedSuppressionHeadEventId } : {}),
       });
     }
   }
