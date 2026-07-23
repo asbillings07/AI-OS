@@ -9,11 +9,12 @@ import type {
 } from "./capabilities.js";
 
 /**
- * Cache advisory AI outputs by stable input revision (#80). A decorator around
+ * Cache advisory AI outputs by stable input content (#80). A decorator around
  * `AiCapabilities` — it never changes that contract (ADR-0011) — that memoizes
  * validated results and coalesces concurrent identical requests. Storage is an
  * in-memory `Map`, per process, never persisted: derived/disposable state stays
- * out of the event log (ADR-0009).
+ * out of the event log (ADR-0009). Keyed by content, not by source revision
+ * (ADR-0015) — a byte-identical new occurrence is still a hit.
  */
 
 /** The provider + model identity a cached entry (and its key) is scoped to. */
@@ -93,7 +94,11 @@ export function computeCacheKey(input: CacheKeyInput): string {
     input.schemaVersion,
     input.promptVersion,
     input.executionProfile.provider,
-    input.executionProfile.modelName ?? "",
+    // `null` (never `""`), so an absent model is never conflated with a
+    // genuinely empty-string one — `AiProvider.modelName` is an optional
+    // string, and both states are currently representable even though an
+    // empty HTTP model would normally itself be a misconfiguration.
+    input.executionProfile.modelName ?? null,
     input.request,
   ]);
   return createHash("sha256").update(material).digest("hex");
@@ -267,7 +272,13 @@ export function withCache(inner: AiCapabilities, options: AiCacheOptions = {}): 
       }
     }
 
-    const promise = call();
+    // Clone `inner`'s result into a cache-owned object *before* freezing it —
+    // freezing the object `inner` itself returned could mutate state owned or
+    // reused by that implementation, which is not this decorator's to touch.
+    // Every future hit/coalesced read shares this exact clone (the same
+    // settled promise), so freezing it here protects all of them; callers
+    // still never receive it directly — see `cloneResult` below.
+    const promise = call().then((result) => Object.freeze(cloneResult(result)) as T);
     const entry: CacheEntry = {
       promise,
       state: "pending",
@@ -279,11 +290,6 @@ export function withCache(inner: AiCapabilities, options: AiCacheOptions = {}): 
 
     try {
       const result = await promise;
-      // Freeze the cache-owned value once, here, at the moment it's captured
-      // — every future hit/coalesced read shares this exact object (the same
-      // settled promise), so freezing it here protects all of them. Callers
-      // never receive this object directly; see `cloneResult` below.
-      Object.freeze(result);
       // Identity-checked: only this entry's own transition may promote it.
       if (store.get(key) === entry) {
         entry.state = "resolved";

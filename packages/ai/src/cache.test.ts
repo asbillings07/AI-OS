@@ -78,6 +78,12 @@ describe("computeCacheKey (#80): pure, explicit contract material", () => {
     );
   });
 
+  it("distinguishes an absent model from an explicitly empty-string model (regression)", () => {
+    const absent = computeCacheKey({ ...base, executionProfile: { provider: "p" } });
+    const empty = computeCacheKey({ ...base, executionProfile: { provider: "p", modelName: "" } });
+    expect(absent).not.toBe(empty);
+  });
+
   it("differs by schema version", () => {
     expect(computeCacheKey({ ...base, schemaVersion: 2 })).not.toBe(computeCacheKey(base));
   });
@@ -165,6 +171,35 @@ describe("withCache (#80)", () => {
     expect(second.summary).toBe("hello");
     expect(second.confidence).toBe(0.42);
     expect(second).not.toBe(first);
+  });
+
+  it("never freezes or otherwise modifies the object inner itself returned (regression)", async () => {
+    // Simulates an AiCapabilities implementation that returns (and may keep
+    // using/mutating) the very same object across calls, e.g. internal
+    // pooling — the decorator must clone before it ever touches that object.
+    const innerResult = { summary: "original", confidence: 0.5 };
+    const inner: AiCapabilities = {
+      providerName: "fake",
+      async summarize() {
+        return innerResult;
+      },
+      async classify() {
+        throw new Error("unused");
+      },
+    };
+    const ai = withCache(inner);
+    await ai.summarize({ text: "x" });
+
+    // The decorator must not have frozen inner's own object.
+    expect(Object.isFrozen(innerResult)).toBe(false);
+    innerResult.summary = "mutated-by-inner-after-returning";
+    innerResult.confidence = 0.9;
+
+    // The cache captured a clone at resolution time, so a later hit is
+    // unaffected by inner mutating its own object afterward.
+    const hit = await ai.summarize({ text: "x" });
+    expect(hit.summary).toBe("original");
+    expect(hit.confidence).toBe(0.5);
   });
 
   it("an omitted maxSentences and the explicit documented default (2) share a key", async () => {
