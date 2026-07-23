@@ -7,9 +7,11 @@ import type { Signal } from "../understanding/signals.js";
 import { subjectKey, type SubjectRef } from "../subject/index.js";
 import { isVisible, attentionRevision, type AttentionState } from "../attention/index.js";
 import { LogEvents, nullLogger, type Logger } from "../observability/index.js";
+import { type OriginatorRef } from "../domain/index.js";
 import {
   importanceContributionFor,
   NEUTRAL_IMPORTANCE,
+  resolveOriginator,
   type ImportanceContribution,
   type PersonalImportanceState,
 } from "../importance/index.js";
@@ -27,6 +29,11 @@ const NO_IMPORTANCE: PersonalImportanceState = { byOriginator: {} };
 
 export type WorkItemBand = "needs_attention" | "can_wait";
 
+export interface WorkItemSuppressionCandidate {
+  readonly originator: OriginatorRef;
+  readonly displayName: string;
+}
+
 /**
  * The ranking/explanation fields every Work Item carries, independent of its
  * Subject kind. The presentation fields (kind/subject/title/location/url) are
@@ -35,6 +42,11 @@ export type WorkItemBand = "needs_attention" | "can_wait";
 interface WorkItemRanking {
   id: string;
   band: WorkItemBand;
+  /**
+   * If this Work Item has a resolvable originator, provides candidate details
+   * for durable suppression ("Don't show again").
+   */
+  suppressionCandidate?: WorkItemSuppressionCandidate;
   /** Final rank score, 0..1. */
   priority: number;
   // The four independent reasoning inputs, kept separate (never a product).
@@ -195,11 +207,13 @@ export function prioritize(
   opportunities: readonly Opportunity[],
   capacity: Capacity,
   importanceBySubject: ReadonlyMap<string, ImportanceContribution> = new Map(),
+  suppressionCandidateBySubject: ReadonlyMap<string, WorkItemSuppressionCandidate> = new Map(),
 ): WorkItem[] {
   const attentionThreshold = 0.35 + (1 - capacity.level) * 0.35;
 
   const items = opportunities.map((opportunity): WorkItem => {
     const signals = opportunity.signals;
+    const suppressionCandidate = suppressionCandidateBySubject.get(subjectKey(opportunity.subject));
     // The `commitment` input blends explicit obligation (a Commitment Signal, e.g.
     // an assignment or requested review) with relationship-derived expectation
     // (FromKnownPerson). They are not the same thing — one is a duty, the other is
@@ -251,6 +265,7 @@ export function prioritize(
       attentionBasisEventIds: [...opportunity.attentionBasisEventIds],
       attentionRevision: attentionRevision(opportunity.subject, opportunity.attentionBasisEventIds),
       importanceEvidenceEventIds: contribution ? [...contribution.evidenceEventIds] : [],
+      ...(suppressionCandidate ? { suppressionCandidate } : {}),
     } as WorkItem;
   });
 
@@ -296,7 +311,7 @@ export function buildWorkItems(options: BuildWorkItemsOptions): WorkItem[] {
   const tracing = logger !== nullLogger;
 
   const opportunities = [...detectOpportunities(context, now), ...detectWorkOpportunities(context, now)];
-  const visible = opportunities.filter((opportunity) => isVisible(opportunity, attention, now));
+  const visible = opportunities.filter((opportunity) => isVisible(opportunity, attention, now, context));
 
   if (tracing) {
     for (const opportunity of visible) {
@@ -309,13 +324,21 @@ export function buildWorkItems(options: BuildWorkItemsOptions): WorkItem[] {
   }
 
   const importanceBySubject = new Map<string, ImportanceContribution>();
+  const suppressionCandidateBySubject = new Map<string, WorkItemSuppressionCandidate>();
   for (const opportunity of visible) {
     const contribution = importanceContributionFor(opportunity.subject, context, importanceState);
     if (contribution) importanceBySubject.set(subjectKey(opportunity.subject), contribution);
+    const resolved = resolveOriginator(opportunity.subject, context);
+    if (resolved) {
+      suppressionCandidateBySubject.set(subjectKey(opportunity.subject), {
+        originator: resolved.originator,
+        displayName: resolved.displayName,
+      });
+    }
   }
 
   const capacity = estimateCapacity(now, { activeWorkCount: visible.length });
-  const items = prioritize(visible, capacity, importanceBySubject);
+  const items = prioritize(visible, capacity, importanceBySubject, suppressionCandidateBySubject);
 
   if (tracing) {
     for (const item of items) {

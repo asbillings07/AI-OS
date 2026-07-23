@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { makeEvent, type EventEnvelope } from "../events/index.js";
-import { EventTypes } from "../domain/index.js";
+import { EventTypes, originatorKey, type OriginatorRef } from "../domain/index.js";
 import { subjectKey, type SubjectRef } from "../subject/index.js";
 import type { Logger } from "../observability/index.js";
 import type { ContextState } from "../understanding/index.js";
@@ -149,5 +149,124 @@ export function buildActionEvent(input: BuildActionEventInput): EventEnvelope | 
     source: "user",
     occurredAt: now,
     payload: base,
+  });
+}
+
+export interface SuppressOriginatorEventIdInput {
+  readonly originator: OriginatorRef;
+  /**
+   * Causal head event ID from `attention.suppressionHeads[originatorKey(originator)]`.
+   * Ensures deterministic IDs across suppress -> unmute -> re-suppress cycles.
+   */
+  readonly previousHeadEventId?: string;
+}
+
+export function suppressOriginatorEventId(input: SuppressOriginatorEventIdInput): string {
+  const material = JSON.stringify([
+    "OriginatorSuppressed",
+    originatorKey(input.originator),
+    input.previousHeadEventId ?? null,
+  ]);
+  return `suppress-${createHash("sha256").update(material).digest("hex").slice(0, 32)}`;
+}
+
+export interface UnsuppressOriginatorEventIdInput {
+  readonly originator: OriginatorRef;
+  readonly suppressionEventId: string;
+}
+
+export function unsuppressOriginatorEventId(input: UnsuppressOriginatorEventIdInput): string {
+  const material = JSON.stringify([
+    "OriginatorUnsuppressed",
+    originatorKey(input.originator),
+    input.suppressionEventId,
+  ]);
+  return `unsuppress-${createHash("sha256").update(material).digest("hex").slice(0, 32)}`;
+}
+
+export interface BuildSuppressOriginatorEventInput {
+  readonly context: ContextState;
+  readonly attention: AttentionState;
+  /** Passed through to buildWorkItems to re-resolve the target work item. */
+  readonly importance?: PersonalImportanceState;
+  readonly now: string;
+  readonly workItemId: string;
+  /** Optimistic-concurrency token for the target work item. */
+  readonly revision: string;
+  readonly reason?: string;
+  readonly logger?: Logger;
+}
+
+export function buildSuppressOriginatorEvent(
+  input: BuildSuppressOriginatorEventInput,
+): EventEnvelope | null {
+  const { context, attention, importance, now, workItemId, revision, reason } = input;
+
+  const surfaced = buildWorkItems({
+    context,
+    attention,
+    importance,
+    now,
+    logger: input.logger,
+  }).find((item) => item.id === workItemId);
+
+  if (!surfaced || surfaced.attentionRevision !== revision) {
+    return null;
+  }
+
+  const originator = originatorFor(surfaced.subject, context);
+  if (!originator) {
+    return null;
+  }
+
+  const key = originatorKey(originator);
+  const previousHeadEventId = attention.suppressionHeads?.[key];
+  const id = suppressOriginatorEventId({ originator, previousHeadEventId });
+
+  return makeEvent({
+    id,
+    type: EventTypes.OriginatorSuppressed,
+    source: "user",
+    occurredAt: now,
+    payload: {
+      originator,
+      ...(reason ? { reason } : {}),
+    },
+  });
+}
+
+export interface BuildUnsuppressOriginatorEventInput {
+  readonly attention: AttentionState;
+  readonly now: string;
+  readonly originator: OriginatorRef;
+  /** Active rule token (`suppressionEventId`). Compared against `attention.suppressedOriginators`. */
+  readonly suppressionEventId: string;
+  readonly reason?: string;
+}
+
+export function buildUnsuppressOriginatorEvent(
+  input: BuildUnsuppressOriginatorEventInput,
+): EventEnvelope | null {
+  const { attention, now, originator, suppressionEventId, reason } = input;
+
+  const key = originatorKey(originator);
+  const active = attention.suppressedOriginators?.[key];
+
+  if (!active || active.suppressionEventId !== suppressionEventId) {
+    return null;
+  }
+
+  const id = unsuppressOriginatorEventId({ originator, suppressionEventId });
+
+  return makeEvent({
+    id,
+    type: EventTypes.OriginatorUnsuppressed,
+    source: "user",
+    occurredAt: now,
+    payload: {
+      originator,
+      suppressionEventId,
+      ...(reason ? { reason } : {}),
+    },
   });
 }

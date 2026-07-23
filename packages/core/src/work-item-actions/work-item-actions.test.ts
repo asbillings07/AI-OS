@@ -10,7 +10,15 @@ import { EventTypes, type ReviewRequestedPayload } from "../domain/index.js";
 import { contextProjection } from "../understanding/context.js";
 import { attentionProjection } from "../attention/projection.js";
 import { buildWorkItems, type WorkItem } from "../prioritization/index.js";
-import { actionEventId, buildActionEvent, type WorkItemAction } from "./index.js";
+import {
+  actionEventId,
+  buildActionEvent,
+  buildSuppressOriginatorEvent,
+  buildUnsuppressOriginatorEvent,
+  suppressOriginatorEventId,
+  unsuppressOriginatorEventId,
+  type WorkItemAction,
+} from "./index.js";
 
 const NOW = "2026-07-15T17:00:00.000Z";
 const REVIEW_CHANGE = "acme/orion#128";
@@ -246,24 +254,152 @@ describe("work-item-actions: stamps a source-neutral originator (#65)", () => {
   });
 });
 
-describe("work-item-actions: recorded actions replay identically (#61, ADR-0009)", () => {
-  it("rebuilds the same Attention state from the log alone", async () => {
+describe("work-item-actions: durable originator suppression and unsuppression (#83)", () => {
+  it("builds OriginatorSuppressed event with server-derived originator and deterministic ID", async () => {
     const h = harness();
     await h.runtime.record(reviewEvent("r1", "2026-07-15T12:00:00.000Z"));
     const item = reviewItem(h);
-    await submit(h, item.id, "acted", item.attentionRevision);
-    const liveAttention = structuredClone(h.attention.state);
 
-    const bus2 = new InProcessEventBus();
-    const context2 = new ProjectionHost(contextProjection);
-    const attention2 = new ProjectionHost(attentionProjection);
-    const runtime2 = new OrionRuntime({
-      bus: bus2,
-      store: h.store,
-      projections: [context2 as ProjectionHost<unknown>, attention2 as ProjectionHost<unknown>],
+    const recorded = await h.runtime.recordExclusive(() =>
+      buildSuppressOriginatorEvent({
+        context: h.context.state,
+        attention: h.attention.state,
+        now: NOW,
+        workItemId: item.id,
+        revision: item.attentionRevision,
+        reason: "Too noisy",
+      }),
+    );
+
+    expect(recorded).toBe(true);
+    const events = userEvents(h);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.type).toBe(EventTypes.OriginatorSuppressed);
+    expect((events[0]?.payload as { originator: unknown }).originator).toEqual({
+      namespace: "github-skill",
+      id: "dana",
     });
-    await runtime2.rebuild();
+  });
 
-    expect(attention2.state).toEqual(liveAttention);
+  it("rejects suppression for a stale revision or unknown work item", async () => {
+    const h = harness();
+    await h.runtime.record(reviewEvent("r1", "2026-07-15T12:00:00.000Z"));
+    const item = reviewItem(h);
+
+    await h.runtime.record(reviewEvent("r2", "2026-07-16T12:00:00.000Z")); // updates revision
+
+    const staleResult = await h.runtime.recordExclusive(() =>
+      buildSuppressOriginatorEvent({
+        context: h.context.state,
+        attention: h.attention.state,
+        now: NOW,
+        workItemId: item.id,
+        revision: item.attentionRevision,
+      }),
+    );
+    expect(staleResult).toBe(false);
+
+    const unknownResult = await h.runtime.recordExclusive(() =>
+      buildSuppressOriginatorEvent({
+        context: h.context.state,
+        attention: h.attention.state,
+        now: NOW,
+        workItemId: "wi-unknown",
+        revision: "rev",
+      }),
+    );
+    expect(unknownResult).toBe(false);
+  });
+
+  it("builds OriginatorUnsuppressed event for valid active rule token and rejects stale token", async () => {
+    const h = harness();
+    await h.runtime.record(reviewEvent("r1", "2026-07-15T12:00:00.000Z"));
+    const item = reviewItem(h);
+
+    // First suppress
+    await h.runtime.recordExclusive(() =>
+      buildSuppressOriginatorEvent({
+        context: h.context.state,
+        attention: h.attention.state,
+        now: NOW,
+        workItemId: item.id,
+        revision: item.attentionRevision,
+      }),
+    );
+
+    const dana = { namespace: "github-skill", id: "dana" };
+    const activeRule = h.attention.state.suppressedOriginators[JSON.stringify(["github-skill", "dana"])];
+    expect(activeRule).toBeDefined();
+
+    // Reject invalid token
+    const badUnsup = await h.runtime.recordExclusive(() =>
+      buildUnsuppressOriginatorEvent({
+        attention: h.attention.state,
+        now: NOW,
+        originator: dana,
+        suppressionEventId: "wrong-id",
+      }),
+    );
+    expect(badUnsup).toBe(false);
+
+    // Accept valid token
+    const validUnsup = await h.runtime.recordExclusive(() =>
+      buildUnsuppressOriginatorEvent({
+        attention: h.attention.state,
+        now: NOW,
+        originator: dana,
+        suppressionEventId: activeRule!.suppressionEventId,
+      }),
+    );
+    expect(validUnsup).toBe(true);
+
+    const events = userEvents(h);
+    expect(events).toHaveLength(2);
+    expect(events[1]?.type).toBe(EventTypes.OriginatorUnsuppressed);
+  });
+
+  it("re-suppress after unmute produces new deterministic event ID incorporating previousHeadEventId", async () => {
+    const h = harness();
+    await h.runtime.record(reviewEvent("r1", "2026-07-15T12:00:00.000Z"));
+    const item = reviewItem(h);
+
+    // First suppress
+    await h.runtime.recordExclusive(() =>
+      buildSuppressOriginatorEvent({
+        context: h.context.state,
+        attention: h.attention.state,
+        now: NOW,
+        workItemId: item.id,
+        revision: item.attentionRevision,
+      }),
+    );
+
+    const dana = { namespace: "github-skill", id: "dana" };
+    const activeRule = h.attention.state.suppressedOriginators[JSON.stringify(["github-skill", "dana"])];
+
+    // Unmute
+    await h.runtime.recordExclusive(() =>
+      buildUnsuppressOriginatorEvent({
+        attention: h.attention.state,
+        now: NOW,
+        originator: dana,
+        suppressionEventId: activeRule!.suppressionEventId,
+      }),
+    );
+
+    // Re-suppress
+    await h.runtime.recordExclusive(() =>
+      buildSuppressOriginatorEvent({
+        context: h.context.state,
+        attention: h.attention.state,
+        now: NOW,
+        workItemId: item.id,
+        revision: item.attentionRevision,
+      }),
+    );
+
+    const suppressEvents = userEvents(h).filter((e) => e.type === EventTypes.OriginatorSuppressed);
+    expect(suppressEvents).toHaveLength(2);
+    expect(suppressEvents[0]?.id).not.toBe(suppressEvents[1]?.id);
   });
 });

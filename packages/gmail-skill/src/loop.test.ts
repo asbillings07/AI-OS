@@ -7,6 +7,8 @@ import {
   contextProjection,
   attentionProjection,
   buildWorkItems,
+  buildSuppressOriginatorEvent,
+  buildUnsuppressOriginatorEvent,
   makeEvent,
   EventTypes,
   type AttentionState,
@@ -228,5 +230,83 @@ describe("the decision loop (ADR-0002/0005/0007/0008/0009/0012)", () => {
 
     expect(second.context.state).toEqual(liveContext);
     expect(second.items()).toEqual(liveItems);
+  });
+
+  it("differentiates soft 'Not important' from hard 'Don't show again' and reversible unmute", async () => {
+    const store = new SqliteEventStore(":memory:");
+    const { runtime, attention, context, items } = runtimeOver(store);
+    await runtime.rebuild();
+    await new GmailSkill().ingest(runtime);
+
+    const initial = items();
+    const danaItem = initial.find((item) => item.subject.id === "th-dana");
+    expect(danaItem).toBeDefined();
+    expect(danaItem?.suppressionCandidate).toEqual({
+      originator: { namespace: "gmail-skill", id: "dana@acme.com" },
+      displayName: "Dana Lee",
+    });
+
+    // 1. Soft dismissal ("Not important")
+    await runtime.record(
+      makeEvent({ type: EventTypes.WorkItemDismissed, source: "user", payload: actionPayload(danaItem!) }),
+    );
+    expect(items().find((item) => item.subject.id === "th-dana")).toBeUndefined();
+
+    // 2. Hard suppression ("Don't show again") on another item from Dana
+    await runtime.record(
+      makeEvent({
+        type: EventTypes.MessageReceived,
+        source: "gmail-skill",
+        id: "gmail:m-dana-2",
+        occurredAt: "2026-07-15T18:00:00.000Z",
+        payload: {
+          messageId: "m-dana-2",
+          threadId: "th-dana-2",
+          from: { name: "Dana Lee", address: "dana@acme.com" },
+          to: [{ address: "me@orion.dev" }],
+          subject: "Another question",
+          snippet: "Second question",
+          body: "Second question body?",
+          receivedAt: "2026-07-15T18:00:00.000Z",
+        },
+      }),
+    );
+
+    const dana2Item = items().find((item) => item.subject.id === "th-dana-2");
+    expect(dana2Item).toBeDefined();
+
+    // Record hard originator suppression
+    const suppressEvt = buildSuppressOriginatorEvent({
+      context: context.state as ContextState,
+      attention: attention.state as AttentionState,
+      now: NOW,
+      workItemId: dana2Item!.id,
+      revision: dana2Item!.attentionRevision,
+    });
+    expect(suppressEvt).not.toBeNull();
+    await runtime.record(suppressEvt!);
+
+    // th-dana-2 is now hidden due to hard originator suppression
+    expect(items().find((item) => item.subject.id === "th-dana-2")).toBeUndefined();
+
+    // 3. Unmute
+    const activeRule = (attention.state as AttentionState).suppressedOriginators[
+      JSON.stringify(["gmail-skill", "dana@acme.com"])
+    ];
+    expect(activeRule).toBeDefined();
+
+    const unsuppressEvt = buildUnsuppressOriginatorEvent({
+      attention: attention.state as AttentionState,
+      now: NOW,
+      originator: { namespace: "gmail-skill", id: "dana@acme.com" },
+      suppressionEventId: activeRule!.suppressionEventId,
+    });
+    expect(unsuppressEvt).not.toBeNull();
+    await runtime.record(unsuppressEvt!);
+
+    // th-dana-2 resurfaces after unmute
+    expect(items().find((item) => item.subject.id === "th-dana-2")).toBeDefined();
+    // th-dana remains hidden (soft-dismissed individually)
+    expect(items().find((item) => item.subject.id === "th-dana")).toBeUndefined();
   });
 });

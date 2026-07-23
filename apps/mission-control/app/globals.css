@@ -271,3 +271,43 @@ body {
   border-color: var(--line);
   color: var(--ink-soft);
 }
+
+.actions__suppress {
+  margin-top: 8px;
+}
+
+.action--suppress {
+  font-size: 12px;
+  color: var(--ink-faint);
+  border-style: dashed;
+}
+
+.action--suppress:hover {
+  border-style: solid;
+  border-color: #a04040;
+  color: #a04040;
+}
+
+.muted-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.muted-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--surface);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin-bottom: 8px;
+  font-size: 14px;
+  color: var(--ink-soft);
+}
+
+.action--unmute:hover {
+  border-color: #2f7d54;
+  color: #2f7d54;
+}

@@ -102,7 +102,7 @@ export function importanceFor(
   return entry ? importanceScore(entry) : NEUTRAL_IMPORTANCE;
 }
 
-interface ResolvedOriginator {
+export interface ResolvedOriginator {
   readonly originator: OriginatorRef;
   /** Human-readable name for explanation only; never part of the identity key. */
   readonly displayName: string;
@@ -119,7 +119,7 @@ interface ResolvedOriginator {
  * time (`latestThreadMessage`), so a late-arriving older message never restamps a
  * thread's originator, while a genuinely new sender does for the new revision.
  */
-function resolveOriginator(subject: SubjectRef, context: ContextState): ResolvedOriginator | null {
+export function resolveOriginator(subject: SubjectRef, context: ContextState): ResolvedOriginator | null {
   switch (subject.kind) {
     case "thread": {
       const thread = context.threads[subject.id];

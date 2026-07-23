@@ -236,3 +236,90 @@ function reviewActionFor(item: WorkItem): EventEnvelope {
     payload: { workItemId: item.id, subject: item.subject, basisEventIds: item.attentionBasisEventIds },
   });
 }
+
+describe("Attention: durable originator suppression (#83)", () => {
+  const aliceGmail = { namespace: "gmail-skill", id: "alice@acme.com" };
+  const aliceGithub = { namespace: "github-skill", id: "alice@acme.com" };
+
+  function suppressEvent(id: string, originator: { namespace: string; id: string }, reason?: string): EventEnvelope {
+    return makeEvent({
+      id,
+      type: EventTypes.OriginatorSuppressed,
+      source: "user",
+      payload: { originator, reason },
+    });
+  }
+
+  function unsuppressEvent(
+    id: string,
+    originator: { namespace: string; id: string },
+    suppressionEventId: string,
+    reason?: string,
+  ): EventEnvelope {
+    return makeEvent({
+      id,
+      type: EventTypes.OriginatorUnsuppressed,
+      source: "user",
+      payload: { originator, suppressionEventId, reason },
+    });
+  }
+
+  it("records active rule in suppressedOriginators and updates suppressionHeads", () => {
+    const s1 = suppressEvent("sup1", aliceGmail);
+    const { attention } = project([s1]);
+
+    expect(attention.suppressedOriginators[JSON.stringify(["gmail-skill", "alice@acme.com"])]).toEqual({
+      originator: aliceGmail,
+      suppressionEventId: "sup1",
+      suppressedAt: s1.occurredAt,
+      reason: undefined,
+    });
+    expect(attention.suppressionHeads[JSON.stringify(["gmail-skill", "alice@acme.com"])]).toBe("sup1");
+  });
+
+  it("removes active rule on matching OriginatorUnsuppressed token and updates head", () => {
+    const s1 = suppressEvent("sup1", aliceGmail);
+    const u1 = unsuppressEvent("unsup1", aliceGmail, "sup1");
+    const { attention } = project([s1, u1]);
+
+    expect(attention.suppressedOriginators[JSON.stringify(["gmail-skill", "alice@acme.com"])]).toBeUndefined();
+    expect(attention.suppressionHeads[JSON.stringify(["gmail-skill", "alice@acme.com"])]).toBe("unsup1");
+  });
+
+  it("ignores stale/mismatched OriginatorUnsuppressed token (projection no-op)", () => {
+    const s1 = suppressEvent("sup1", aliceGmail);
+    const uStale = unsuppressEvent("unsup-stale", aliceGmail, "wrong-id");
+    const { attention } = project([s1, uStale]);
+
+    expect(attention.suppressedOriginators[JSON.stringify(["gmail-skill", "alice@acme.com"])]?.suppressionEventId).toBe("sup1");
+    expect(attention.suppressionHeads[JSON.stringify(["gmail-skill", "alice@acme.com"])]).toBe("sup1");
+  });
+
+  it("supports suppress -> unmute -> suppress cycles with sequential heads", () => {
+    const s1 = suppressEvent("sup1", aliceGmail);
+    const u1 = unsuppressEvent("unsup1", aliceGmail, "sup1");
+    const s2 = suppressEvent("sup2", aliceGmail);
+    const { attention } = project([s1, u1, s2]);
+
+    expect(attention.suppressedOriginators[JSON.stringify(["gmail-skill", "alice@acme.com"])]?.suppressionEventId).toBe("sup2");
+    expect(attention.suppressionHeads[JSON.stringify(["gmail-skill", "alice@acme.com"])]).toBe("sup2");
+  });
+
+  it("hides work items matching a suppressed originator regardless of subject disposition", () => {
+    const m1 = message("m1", "t1", "2026-07-15T09:00:00.000Z"); // From dana@acme.com (gmail-skill)
+    expect(visibleThreadIds([m1])).toContain("t1");
+
+    const danaGmail = { namespace: "gmail-skill", id: "dana@acme.com" };
+    const sup = suppressEvent("sup-dana", danaGmail);
+
+    expect(visibleThreadIds([m1, sup])).not.toContain("t1");
+  });
+
+  it("respects namespace boundaries when muting an originator", () => {
+    const m1 = message("m1", "t1", "2026-07-15T09:00:00.000Z"); // From dana@acme.com (gmail-skill)
+    const supGithub = suppressEvent("sup-github", { namespace: "github-skill", id: "dana@acme.com" });
+
+    // Muting github-skill:dana@acme.com does NOT hide gmail-skill:dana@acme.com
+    expect(visibleThreadIds([m1, supGithub])).toContain("t1");
+  });
+});

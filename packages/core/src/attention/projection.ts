@@ -3,7 +3,11 @@ import type { Projection } from "../projection/index.js";
 import {
   EventTypes,
   isCurrentActionPayload,
+  originatorKey,
   type MessageReceivedPayload,
+  type OriginatorRef,
+  type OriginatorSuppressedPayload,
+  type OriginatorUnsuppressedPayload,
   type WorkItemActionPayload,
   type WorkItemSnoozePayload,
 } from "../domain/index.js";
@@ -45,13 +49,24 @@ export type AttentionDisposition =
       readonly reopenedByEventId?: string;
     };
 
+export interface SuppressedOriginator {
+  readonly originator: OriginatorRef;
+  readonly suppressionEventId: string;
+  readonly suppressedAt: string;
+  readonly reason?: string;
+}
+
 export interface AttentionState {
   /** Keyed by subjectKey. Latest action wins by append order (v0.1 contract). */
   readonly dispositions: Record<string, AttentionDisposition>;
+  /** Active durable originator suppressions, keyed by originatorKey(originator). */
+  readonly suppressedOriginators: Record<string, SuppressedOriginator>;
+  /** Causal head event ID for originator suppression/unsuppression chains, keyed by originatorKey(originator). */
+  readonly suppressionHeads: Record<string, string>;
 }
 
 function emptyAttention(): AttentionState {
-  return { dispositions: {} };
+  return { dispositions: {}, suppressedOriginators: {}, suppressionHeads: {} };
 }
 
 const ACTION_FOR_TYPE: Record<string, AttentionAction> = {
@@ -84,7 +99,51 @@ function applyAction(state: AttentionState, event: EventEnvelope, action: Attent
 
   // Append order is authoritative for user intent (single-process v0.1): the most
   // recent action on a subject wins, so we simply overwrite.
-  return { dispositions: { ...state.dispositions, [subjectKey(disposition.subject)]: disposition } };
+  return {
+    ...state,
+    dispositions: { ...state.dispositions, [subjectKey(disposition.subject)]: disposition },
+  };
+}
+
+function applyOriginatorSuppressed(state: AttentionState, event: EventEnvelope): AttentionState {
+  const payload = event.payload as OriginatorSuppressedPayload;
+  const key = originatorKey(payload.originator);
+  const suppressed: SuppressedOriginator = {
+    originator: payload.originator,
+    suppressionEventId: event.id,
+    suppressedAt: event.occurredAt,
+    reason: payload.reason,
+  };
+  return {
+    ...state,
+    suppressedOriginators: {
+      ...(state.suppressedOriginators ?? {}),
+      [key]: suppressed,
+    },
+    suppressionHeads: {
+      ...(state.suppressionHeads ?? {}),
+      [key]: event.id,
+    },
+  };
+}
+
+function applyOriginatorUnsuppressed(state: AttentionState, event: EventEnvelope): AttentionState {
+  const payload = event.payload as OriginatorUnsuppressedPayload;
+  const key = originatorKey(payload.originator);
+  const active = state.suppressedOriginators?.[key];
+  if (!active || active.suppressionEventId !== payload.suppressionEventId) {
+    return state;
+  }
+  const nextSuppressed = { ...(state.suppressedOriginators ?? {}) };
+  delete nextSuppressed[key];
+  return {
+    ...state,
+    suppressedOriginators: nextSuppressed,
+    suppressionHeads: {
+      ...(state.suppressionHeads ?? {}),
+      [key]: event.id,
+    },
+  };
 }
 
 /**
@@ -101,6 +160,7 @@ function applyLegacyReopen(state: AttentionState, event: EventEnvelope): Attenti
   if (existing.action === "dismissed") return state;
   if (existing.reopenedByEventId) return state;
   return {
+    ...state,
     dispositions: { ...state.dispositions, [key]: { ...existing, reopenedByEventId: event.id } },
   };
 }
@@ -111,6 +171,8 @@ export const attentionProjection: Projection<AttentionState> = {
   apply: (state, event) => {
     const action = ACTION_FOR_TYPE[event.type];
     if (action) return applyAction(state, event, action);
+    if (event.type === EventTypes.OriginatorSuppressed) return applyOriginatorSuppressed(state, event);
+    if (event.type === EventTypes.OriginatorUnsuppressed) return applyOriginatorUnsuppressed(state, event);
     if (event.type === EventTypes.MessageReceived) return applyLegacyReopen(state, event);
     return state;
   },

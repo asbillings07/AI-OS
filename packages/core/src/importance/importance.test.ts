@@ -410,6 +410,25 @@ describe("personalImportanceProjection: folding (#65)", () => {
     const state = foldImportance([...history(gmail, "g"), ...history(github, "h")]);
     expect(importanceFor(state, gmail)).toBe(importanceFor(state, github));
   });
+
+  it("ignores OriginatorSuppressed and OriginatorUnsuppressed events (no importance score effect)", () => {
+    const supEvent = makeEvent({
+      id: "sup-1",
+      type: EventTypes.OriginatorSuppressed,
+      source: "user",
+      payload: { originator: DANA },
+    });
+    const unsupEvent = makeEvent({
+      id: "unsup-1",
+      type: EventTypes.OriginatorUnsuppressed,
+      source: "user",
+      payload: { originator: DANA, suppressionEventId: "sup-1" },
+    });
+
+    const state = foldImportance([supEvent, unsupEvent]);
+    expect(state.byOriginator[originatorKey(DANA)]).toBeUndefined();
+    expect(importanceFor(state, DANA)).toBe(NEUTRAL_IMPORTANCE);
+  });
 });
 
 // --- importanceContributionFor: the plain data prioritize() actually sees -----
