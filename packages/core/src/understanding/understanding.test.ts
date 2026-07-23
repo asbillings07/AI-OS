@@ -35,12 +35,13 @@ describe("Context projection (ADR-0005)", () => {
     expect(thread?.status).toBe("open");
   });
 
-  it("builds Person relationship strength across threads", () => {
+  it("builds Person relationship counts across threads", () => {
     const context = fold([
       message({ threadId: "t1", messageId: "m1" }),
       message({ threadId: "t2", messageId: "m2", subject: "Another" }),
     ]);
-    expect(context.people["dana@acme.com"]?.messageCount).toBe(2);
+    expect(context.people["dana@acme.com"]?.inboundCount).toBe(2);
+    expect(context.people["dana@acme.com"]?.outboundCount).toBe(0);
   });
 
   it("marks a thread handled when the user acts on it", () => {
@@ -64,6 +65,34 @@ describe("Signal detection (deterministic)", () => {
     const kinds = detectSignals(context, "2026-07-15T12:00:00.000Z").map((s) => s.kind);
     expect(kinds).toContain("AwaitingReply");
     expect(kinds).toContain("DirectQuestion");
+  });
+
+  it("does NOT emit FromKnownPerson for repeated inbound-only messages", () => {
+    const context = fold([
+      message({ threadId: "t1", messageId: "m1" }),
+      message({ threadId: "t2", messageId: "m2", subject: "Another" }),
+    ]);
+    const kinds = detectSignals(context, "2026-07-15T12:00:00.000Z").map((s) => s.kind);
+    expect(kinds).not.toContain("FromKnownPerson");
+  });
+
+  it("emits FromKnownPerson when two-way exchange exists in synthetic state", () => {
+    const baseContext = fold([message({ threadId: "t1", messageId: "m1" })]);
+    const context: ContextState = {
+      ...baseContext,
+      people: {
+        ...baseContext.people,
+        "dana@acme.com": {
+          ...baseContext.people["dana@acme.com"]!,
+          inboundCount: 1,
+          outboundCount: 1,
+        },
+      },
+    };
+    const signal = detectSignals(context, "2026-07-15T12:00:00.000Z").find((s) => s.kind === "FromKnownPerson");
+    expect(signal).toBeDefined();
+    expect(signal?.strength).toBeCloseTo(0.55, 5);
+    expect(signal?.evidence).toBe("You've exchanged messages with Dana Lee.");
   });
 
   it("classifies automated senders as LikelyLowValue and nothing else", () => {

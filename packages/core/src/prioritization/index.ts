@@ -149,7 +149,7 @@ function buildReason(
 ): string {
   const parts = [LEAD_LINE[kind]];
   if (signalStrength(signals, "DirectQuestion") > 0) parts.push("It asks a direct question.");
-  if (signalStrength(signals, "FromKnownPerson") > 0) parts.push("It's from someone you correspond with.");
+  if (signalStrength(signals, "FromKnownPerson") > 0) parts.push("You've exchanged messages with this person.");
   if (signalStrength(signals, "Commitment") > 0) parts.push("You've taken this on.");
   if (signalStrength(signals, "Aging") > 0) parts.push("It has been waiting a while.");
   const importanceFragment = importanceReasonFragment(contribution);

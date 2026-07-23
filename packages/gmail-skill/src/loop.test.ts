@@ -49,18 +49,18 @@ describe("the decision loop (ADR-0002/0005/0007/0008/0009/0012)", () => {
     await new GmailSkill().ingest(runtime);
 
     const before = items();
-    const sam = before.find((item) => item.subject.id === "th-sam");
-    expect(sam).toBeDefined();
-    expect(sam?.band).toBe("needs_attention");
+    const dana = before.find((item) => item.subject.id === "th-dana");
+    expect(dana).toBeDefined();
+    expect(dana?.band).toBe("needs_attention");
 
-    // The user handles Sam's thread — a new Event flows back into the system,
+    // The user handles Dana's thread — a new Event flows back into the system,
     // scoped to exactly the revision they saw.
     await runtime.record(
-      makeEvent({ type: EventTypes.WorkItemActedOn, source: "user", payload: actionPayload(sam!) }),
+      makeEvent({ type: EventTypes.WorkItemActedOn, source: "user", payload: actionPayload(dana!) }),
     );
 
     const after = items();
-    expect(after.find((item) => item.subject.id === "th-sam")).toBeUndefined();
+    expect(after.find((item) => item.subject.id === "th-dana")).toBeUndefined();
     expect(after.length).toBe(before.length - 1);
   });
 

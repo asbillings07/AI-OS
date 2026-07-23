@@ -73,8 +73,8 @@ export function latestThreadMessage(thread: ThreadContext): ObservedMessage | un
 export interface PersonContext {
   address: string;
   name?: string;
-  /** How many messages seen from this person; a proxy for relationship depth. */
-  messageCount: number;
+  inboundCount: number;
+  outboundCount: number;
   firstSeenAt: string;
   lastSeenAt: string;
 }
@@ -313,13 +313,15 @@ function applyMessageReceived(state: ContextState, event: EventEnvelope): Contex
     ? {
         ...person,
         name: person.name ?? payload.from.name,
-        messageCount: person.messageCount + 1,
+        inboundCount: (person.inboundCount ?? 0) + 1,
+        outboundCount: person.outboundCount ?? 0,
         lastSeenAt: payload.receivedAt,
       }
     : {
         address: payload.from.address,
         name: payload.from.name,
-        messageCount: 1,
+        inboundCount: 1,
+        outboundCount: 0,
         firstSeenAt: payload.receivedAt,
         lastSeenAt: payload.receivedAt,
       };

@@ -17,6 +17,7 @@
     "db:reset": "tsx scripts/db-reset.ts",
     "db:rebuild": "tsx scripts/rebuild.ts",
     "log:inspect": "tsx scripts/inspect-log.ts",
+    "dogfood:check": "tsx scripts/check-dogfood.ts",
     "build:mission-control": "npm --workspace @orion/mission-control run build"
   },
   "devDependencies": {
