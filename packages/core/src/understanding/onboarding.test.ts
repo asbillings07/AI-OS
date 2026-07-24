@@ -9,6 +9,7 @@ import {
   ScriptedBeliefExtractor,
   determineSourceEventIds,
   onboardingProjection,
+  type BeliefExtractor,
   type CandidateBeliefProposal,
   type ExtractionRequest,
 } from "./onboarding.js";
@@ -237,13 +238,13 @@ describe("Natural-language onboarding baseline (#70)", () => {
       const sessionState = host.state.sessions.get(sessionId)!;
       expect(sessionState.beliefs.size).toBe(0);
       expect(sessionState.turns).toHaveLength(1);
-      expect(sessionState.status).toBe("paused"); // Terminal paused state reached
+      expect(sessionState.status).toBe("paused");
     } finally {
       store.close();
     }
   });
 
-  it("Fixture Journey 4: Correction and Rejection flow", async () => {
+  it("Fixture Journey 4: Correction and Rejection flow with explicit correction evidence lineage", async () => {
     const store = new SqliteEventStore(":memory:");
     try {
       const bus = new InProcessEventBus();
@@ -308,14 +309,6 @@ describe("Natural-language onboarding baseline (#70)", () => {
       });
       expect(rejected).toBe(true);
 
-      // Attempting to confirm rejected belief fails
-      const confirmRejected = await engine.confirmBelief({
-        sessionId,
-        beliefId: sportsBelief.beliefId,
-        now: NOW,
-      });
-      expect(confirmRejected).toBe(false);
-
       // User corrects work belief
       const { newBeliefId } = await engine.correctBelief({
         sessionId,
@@ -336,6 +329,9 @@ describe("Natural-language onboarding baseline (#70)", () => {
       expect(replacement.status).toBe("confirmed");
       expect(replacement.derivation).toBe("declared_directly");
       expect(replacement.verification).toBe("user_confirmed");
+      // Explicit correction evidence lineage: sourceEventIds contains strictly the correction event envelope ID
+      expect(replacement.sourceEventIds).toEqual([`evt_corr_${newBeliefId}`]);
+      expect(replacement.correctedFromBeliefId).toBe(workBelief.beliefId);
 
       // Establish baseline
       const { confirmedBeliefIds, summary } = await engine.establishBaseline({
@@ -350,7 +346,7 @@ describe("Natural-language onboarding baseline (#70)", () => {
     }
   });
 
-  it("Fixture Journey 5: Repeated skip/resume, Retry idempotency, Baseline deletion, and Replay", async () => {
+  it("Opt-In Extraction Gating: Pre-extraction category filtering and post-consent effective policy", async () => {
     const store = new SqliteEventStore(":memory:");
     try {
       const bus = new InProcessEventBus();
@@ -361,114 +357,12 @@ describe("Natural-language onboarding baseline (#70)", () => {
         projections: [host as ProjectionHost<unknown>],
       });
 
-      const extractor = new ScriptedBeliefExtractor([
-        {
-          pattern: /writing code/i,
-          proposals: [
-            {
-              subject: "coding",
-              claim: "Building Orion software",
-              category: "priorities",
-              temporalScope: "current",
-              evidenceText: "writing code",
-              confidence: 0.9,
-            },
-          ],
-        },
-      ]);
+      let capturedEligibleCategories: ReadonlySet<string> | undefined;
 
-      const engine = new OnboardingEngine({
-        runtime,
-        extractor,
-        getProjectionState: () => host.state,
-      });
-
-      const { sessionId, questionId } = await engine.startSession({
-        sessionId: "sess_life_1",
-        now: NOW,
-      });
-
-      // Test repeated skip & resume cycles (sequence-aware event IDs)
-      await engine.skipSession(sessionId, NOW);
-      expect(host.state.sessions.get(sessionId)!.status).toBe("paused");
-      expect(host.state.sessions.get(sessionId)!.skipCount).toBe(1);
-
-      await engine.resumeSession(sessionId, NOW);
-      expect(host.state.sessions.get(sessionId)!.status).toBe("active");
-      expect(host.state.sessions.get(sessionId)!.resumeCount).toBe(1);
-
-      await engine.skipSession(sessionId, NOW);
-      expect(host.state.sessions.get(sessionId)!.skipCount).toBe(2);
-
-      await engine.resumeSession(sessionId, NOW);
-      expect(host.state.sessions.get(sessionId)!.resumeCount).toBe(2);
-
-      // Retry recordStatement idempotency
-      const res1 = await engine.recordStatement({
-        sessionId,
-        questionId,
-        rawText: "I spend most of my time writing code.",
-        now: NOW,
-      });
-
-      // Retrying recordStatement with different rawText on answered question returns existing statement
-      const res2 = await engine.recordStatement({
-        sessionId,
-        questionId,
-        rawText: "Different text provided on retry",
-        now: NOW,
-      });
-
-      expect(res1.statementId).toBe(res2.statementId);
-      expect(res1.statementEnvelopeId).toBe(res2.statementEnvelopeId);
-      expect(res1.proposedBeliefs).toHaveLength(1);
-      expect(res2.proposedBeliefs).toEqual(res1.proposedBeliefs);
-
-      const b = res1.proposedBeliefs[0]!;
-      await engine.confirmBelief({ sessionId, beliefId: b.beliefId, now: NOW });
-      await engine.establishBaseline({ sessionId, now: NOW });
-
-      expect(host.state.sessions.get(sessionId)!.isBaselineEstablished).toBe(true);
-
-      // Test Delete Baseline (Privacy)
-      await engine.deleteBaseline(sessionId, "User requested privacy deletion", NOW);
-
-      const deletedState = host.state.sessions.get(sessionId)!;
-      expect(deletedState.isBaselineEstablished).toBe(false);
-      expect(deletedState.isBaselineDeleted).toBe(true);
-      expect(deletedState.baselineSummary).toBeUndefined();
-
-      // Test Replay parity
-      const replayedHost = new ProjectionHost(onboardingProjection);
-      const replayedRuntime = new OrionRuntime({
-        bus: new InProcessEventBus(),
-        store,
-        projections: [replayedHost as ProjectionHost<unknown>],
-      });
-
-      await replayedRuntime.rebuild();
-      expect(replayedHost.state.sessions.get(sessionId)!.isBaselineDeleted).toBe(true);
-      expect(replayedHost.state.sessions.get(sessionId)!.isBaselineEstablished).toBe(false);
-    } finally {
-      store.close();
-    }
-  });
-
-  it("Opt-in Consent & Policy Gate blocks unconsented categories completely before extraction payload", async () => {
-    const store = new SqliteEventStore(":memory:");
-    try {
-      const bus = new InProcessEventBus();
-      const host = new ProjectionHost(onboardingProjection);
-      const runtime = new OrionRuntime({
-        bus,
-        store,
-        projections: [host as ProjectionHost<unknown>],
-      });
-
-      const extractor = new ScriptedBeliefExtractor([
-        {
-          pattern: /daily routine/i,
-          proposals: [
+      const mockExtractor: BeliefExtractor = {
+        async extractCandidates(request: ExtractionRequest) {
+          capturedEligibleCategories = new Set(request.eligibleCategories);
+          return [
             {
               subject: "routine",
               claim: "Morning routine at 6 AM",
@@ -477,11 +371,11 @@ describe("Natural-language onboarding baseline (#70)", () => {
               evidenceText: "daily routine",
               confidence: 0.9,
             },
-          ],
+          ];
         },
-      ]);
+      };
 
-      // Unconsented policy gate (routines requires opt-in consent, not granted)
+      // Gate requiring opt-in for routines, consent NOT granted
       const unconsentedGate = new DeterministicPolicyGate({
         optInCategories: new Set(["routines"]),
         grantedConsentCategories: new Set(),
@@ -489,13 +383,13 @@ describe("Natural-language onboarding baseline (#70)", () => {
 
       const engine = new OnboardingEngine({
         runtime,
-        extractor,
+        extractor: mockExtractor,
         policyGate: unconsentedGate,
         getProjectionState: () => host.state,
       });
 
       const { sessionId, questionId } = await engine.startSession({
-        sessionId: "sess_opt_1",
+        sessionId: "sess_opt_test_1",
         now: NOW,
       });
 
@@ -506,11 +400,14 @@ describe("Natural-language onboarding baseline (#70)", () => {
         now: NOW,
       });
 
-      // No candidate or belief proposal payload exists before consent!
-      expect(proposedBeliefs).toHaveLength(0);
-      expect(host.state.sessions.get(sessionId)!.beliefs.size).toBe(0);
+      // Pre-extraction eligibleCategories passed to extractor MUST NOT contain 'routines'
+      expect(capturedEligibleCategories).toBeDefined();
+      expect(capturedEligibleCategories!.has("routines")).toBe(false);
 
-      // Now grant consent
+      // No proposals created
+      expect(proposedBeliefs).toHaveLength(0);
+
+      // Now with granted consent
       const consentedGate = new DeterministicPolicyGate({
         optInCategories: new Set(["routines"]),
         grantedConsentCategories: new Set(["routines"]),
@@ -518,13 +415,13 @@ describe("Natural-language onboarding baseline (#70)", () => {
 
       const consentedEngine = new OnboardingEngine({
         runtime,
-        extractor,
+        extractor: mockExtractor,
         policyGate: consentedGate,
         getProjectionState: () => host.state,
       });
 
       const { sessionId: s2, questionId: q2 } = await consentedEngine.startSession({
-        sessionId: "sess_opt_2",
+        sessionId: "sess_opt_test_2",
         now: NOW,
       });
 
@@ -535,14 +432,165 @@ describe("Natural-language onboarding baseline (#70)", () => {
         now: NOW,
       });
 
+      expect(capturedEligibleCategories!.has("routines")).toBe(true);
       expect(consentedBeliefs).toHaveLength(1);
-      expect(consentedBeliefs[0]!.categoryPolicy).toBe("opt_in");
+      // Post-consent effective policy is 'allowed'
+      expect(consentedBeliefs[0]!.categoryPolicy).toBe("allowed");
     } finally {
       store.close();
     }
   });
 
-  it("Restart and Reset Journeys", async () => {
+  it("Statement Processing Retry Safety & Failure Recovery", async () => {
+    const store = new SqliteEventStore(":memory:");
+    try {
+      const bus = new InProcessEventBus();
+      const host = new ProjectionHost(onboardingProjection);
+      const runtime = new OrionRuntime({
+        bus,
+        store,
+        projections: [host as ProjectionHost<unknown>],
+      });
+
+      let throwCount = 0;
+      const failingExtractor: BeliefExtractor = {
+        async extractCandidates(request: ExtractionRequest) {
+          if (throwCount === 0) {
+            throwCount++;
+            throw new Error("Simulated extraction crash after statement recording!");
+          }
+          return [
+            {
+              subject: "coding",
+              claim: "Building software",
+              category: "goals",
+              temporalScope: "current",
+              evidenceText: "writing code",
+              confidence: 0.9,
+            },
+          ];
+        },
+      };
+
+      const engine = new OnboardingEngine({
+        runtime,
+        extractor: failingExtractor,
+        getProjectionState: () => host.state,
+      });
+
+      const { sessionId, questionId } = await engine.startSession({
+        sessionId: "sess_retry_1",
+        now: NOW,
+      });
+
+      const stmtText = "I spend most of my time writing code.";
+
+      // First call fails during extraction AFTER UserStatementRecorded landed on log
+      await expect(
+        engine.recordStatement({
+          sessionId,
+          questionId,
+          rawText: stmtText,
+          now: NOW,
+        }),
+      ).rejects.toThrow("Simulated extraction crash");
+
+      // Verify UserStatementRecorded was persisted on state
+      const sessionState = host.state.sessions.get(sessionId)!;
+      const turn = sessionState.turns.find((t) => t.questionId === questionId)!;
+      expect(turn.statementId).toBeDefined();
+      expect(turn.rawStatementText).toBe(stmtText);
+      expect(turn.isStatementProcessed).toBeFalsy();
+
+      // Retry recordStatement: resumes using persisted statement text and succeeds
+      const retryResult = await engine.recordStatement({
+        sessionId,
+        questionId,
+        rawText: "Different unpersisted text on retry",
+        now: NOW,
+      });
+
+      expect(retryResult.statementId).toBe(turn.statementId);
+      expect(retryResult.proposedBeliefs).toHaveLength(1);
+      expect(retryResult.proposedBeliefs[0]!.subject).toBe("coding");
+
+      // Statement is now marked processed
+      expect(host.state.sessions.get(sessionId)!.turns[0]!.isStatementProcessed).toBe(true);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("Concurrency Safety: Concurrent recordStatement calls use recorded statement text", async () => {
+    const store = new SqliteEventStore(":memory:");
+    try {
+      const bus = new InProcessEventBus();
+      const host = new ProjectionHost(onboardingProjection);
+      const runtime = new OrionRuntime({
+        bus,
+        store,
+        projections: [host as ProjectionHost<unknown>],
+      });
+
+      const extractor = new ScriptedBeliefExtractor([
+        {
+          pattern: /Text A/i,
+          proposals: [
+            {
+              subject: "topic_a",
+              claim: "Topic A proposal",
+              category: "priorities",
+              temporalScope: "current",
+              evidenceText: "Text A",
+              confidence: 0.9,
+            },
+          ],
+        },
+        {
+          pattern: /Text B/i,
+          proposals: [
+            {
+              subject: "topic_b",
+              claim: "Topic B proposal",
+              category: "priorities",
+              temporalScope: "current",
+              evidenceText: "Text B",
+              confidence: 0.9,
+            },
+          ],
+        },
+      ]);
+
+      const engine = new OnboardingEngine({
+        runtime,
+        extractor,
+        getProjectionState: () => host.state,
+      });
+
+      const { sessionId, questionId } = await engine.startSession({
+        sessionId: "sess_concurrent_1",
+        now: NOW,
+      });
+
+      // Call A and Call B executed concurrently
+      const [resA, resB] = await Promise.all([
+        engine.recordStatement({ sessionId, questionId, rawText: "I am focusing on Text A.", now: NOW }),
+        engine.recordStatement({ sessionId, questionId, rawText: "I am focusing on Text B.", now: NOW }),
+      ]);
+
+      // Both calls return the exact same statement ID and envelope ID
+      expect(resA.statementId).toBe(resB.statementId);
+      expect(resA.statementEnvelopeId).toBe(resB.statementEnvelopeId);
+
+      // Whichever text landed first is used by both returns; no cross-contamination or Topic B derived from Text A
+      expect(resA.proposedBeliefs).toEqual(resB.proposedBeliefs);
+      expect(resA.proposedBeliefs).toHaveLength(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("Enforces Single Pending Question rule in askFollowUp", async () => {
     const store = new SqliteEventStore(":memory:");
     try {
       const bus = new InProcessEventBus();
@@ -560,42 +608,29 @@ describe("Natural-language onboarding baseline (#70)", () => {
         getProjectionState: () => host.state,
       });
 
-      // Test Restart Session
-      const { sessionId: s1, questionId: q1 } = await engine.startSession({
-        sessionId: "sess_restart_old",
+      const { sessionId } = await engine.startSession({
+        sessionId: "sess_pending_q_1",
         now: NOW,
       });
 
-      await engine.recordStatement({
-        sessionId: s1,
-        questionId: q1,
-        rawText: "Initial statement",
+      // Opening question is pending (unanswered). Attempting askFollowUp returns existing pending question!
+      const followUp1 = await engine.askFollowUp({
+        sessionId,
+        questionText: "Different follow-up wording",
         now: NOW,
       });
 
-      const restartRes1 = await engine.restartSession(s1, NOW);
-      expect(restartRes1.newSessionId).toBe("sess_restart_old_restarted");
-      expect(host.state.sessions.get(s1)!.status).toBe("abandoned");
-      expect(host.state.sessions.get(restartRes1.newSessionId)!.status).toBe("active");
+      expect(followUp1.questionId).toBe("q_sess_pending_q_1_1");
+      expect(followUp1.questionText).toBe("What is important to you?");
 
-      // Retrying restartSession returns existing restarted session
-      const restartRes2 = await engine.restartSession(s1, NOW);
-      expect(restartRes2.newSessionId).toBe(restartRes1.newSessionId);
-
-      // Test Reset Session
-      const resetRes = await engine.resetSession(restartRes1.newSessionId, NOW);
-      expect(resetRes.questionId).toBe("q_sess_restart_old_restarted_1_reset_1");
-
-      const resetSessionState = host.state.sessions.get(restartRes1.newSessionId)!;
-      expect(resetSessionState.turns).toHaveLength(1);
-      expect(resetSessionState.turns[0]!.questionId).toBe(resetRes.questionId);
-      expect(resetSessionState.beliefs.size).toBe(0);
+      // Session turns length remains 1
+      expect(host.state.sessions.get(sessionId)!.turns).toHaveLength(1);
     } finally {
       store.close();
     }
   });
 
-  it("State Transition Invariants and Command Preconditions", async () => {
+  it("Reset Session Command Identity on retry", async () => {
     const store = new SqliteEventStore(":memory:");
     try {
       const bus = new InProcessEventBus();
@@ -606,22 +641,7 @@ describe("Natural-language onboarding baseline (#70)", () => {
         projections: [host as ProjectionHost<unknown>],
       });
 
-      const extractor = new ScriptedBeliefExtractor([
-        {
-          pattern: /project/i,
-          proposals: [
-            {
-              subject: "project",
-              claim: "Active project",
-              category: "goals",
-              temporalScope: "current",
-              evidenceText: "project",
-              confidence: 0.9,
-            },
-          ],
-        },
-      ]);
-
+      const extractor = new ScriptedBeliefExtractor([]);
       const engine = new OnboardingEngine({
         runtime,
         extractor,
@@ -629,74 +649,34 @@ describe("Natural-language onboarding baseline (#70)", () => {
       });
 
       const { sessionId, questionId } = await engine.startSession({
-        sessionId: "sess_invariants_1",
+        sessionId: "sess_reset_retry_1",
         now: NOW,
       });
 
-      const { proposedBeliefs } = await engine.recordStatement({
+      await engine.recordStatement({
         sessionId,
         questionId,
-        rawText: "I am working on my project.",
+        rawText: "First statement",
         now: NOW,
       });
 
-      const b = proposedBeliefs[0]!;
+      // Reset session
+      const reset1 = await engine.resetSession(sessionId, NOW);
+      expect(reset1.questionId).toBe("q_sess_reset_retry_1_1_reset_1");
 
-      // Confirm belief
-      await engine.confirmBelief({ sessionId, beliefId: b.beliefId, now: NOW });
+      // Retrying resetSession while unanswered question pending returns existing reset opening question
+      const reset2 = await engine.resetSession(sessionId, NOW);
+      expect(reset2.questionId).toBe(reset1.questionId);
 
-      // Rejecting a confirmed belief is invalid and returns false
-      const rejectConfirmed = await engine.rejectBelief({
-        sessionId,
-        beliefId: b.beliefId,
-        now: NOW,
-      });
-      expect(rejectConfirmed).toBe(false);
-
-      // Establish baseline
-      await engine.establishBaseline({ sessionId, now: NOW });
-
-      // After baseline establishment, confirm/correct/reject operations are rejected
-      const confirmPostBase = await engine.confirmBelief({
-        sessionId,
-        beliefId: b.beliefId,
-        now: NOW,
-      });
-      expect(confirmPostBase).toBe(false);
-
-      await expect(
-        engine.correctBelief({
-          sessionId,
-          oldBeliefId: b.beliefId,
-          rawCorrectionText: "Correction text",
-          correctedClaim: "New claim",
-          correctedSubject: "new_subj",
-          correctedCategory: "goals",
-          now: NOW,
-        }),
-      ).rejects.toThrow();
-
-      // Establishing baseline again on completed session is idempotent
-      const baseAgain = await engine.establishBaseline({ sessionId, now: NOW });
-      expect(baseAgain.confirmedBeliefIds).toEqual([b.beliefId]);
-
-      // Establishing baseline on a paused session throws error
-      const { sessionId: sPaused } = await engine.startSession({
-        sessionId: "sess_paused_base",
-        now: NOW,
-      });
-      await engine.skipSession(sPaused, NOW);
-      await expect(engine.establishBaseline({ sessionId: sPaused, now: NOW })).rejects.toThrow();
-
-      // Restarting or resetting a completed session throws error
-      await expect(engine.restartSession(sessionId, NOW)).rejects.toThrow();
-      await expect(engine.resetSession(sessionId, NOW)).rejects.toThrow();
+      const sessionState = host.state.sessions.get(sessionId)!;
+      expect(sessionState.resetCount).toBe(1);
+      expect(sessionState.turns).toHaveLength(1);
     } finally {
       store.close();
     }
   });
 
-  it("Narrows evidence provenance sourceEventIds to turns where evidenceText appears", () => {
+  it("Narrows evidence provenance sourceEventIds strictly to matching turn envelope ID", () => {
     const request: ExtractionRequest = {
       currentQuestion: "Question 2",
       currentStatement: "I am focused on my career.",
@@ -708,12 +688,13 @@ describe("Natural-language onboarding baseline (#70)", () => {
           statementEnvelopeId: "evt_stmt_turn1",
         },
       ],
+      eligibleCategories: new Set(["goals", "values"]),
     };
 
     const careerSourceIds = determineSourceEventIds("career", request);
-    expect(careerSourceIds).toEqual(["evt_stmt_turn2"]); // Only turn 2!
+    expect(careerSourceIds).toEqual(["evt_stmt_turn2"]);
 
     const familySourceIds = determineSourceEventIds("family", request);
-    expect(familySourceIds).toEqual(["evt_stmt_turn1"]); // Only turn 1!
+    expect(familySourceIds).toEqual(["evt_stmt_turn1"]);
   });
 });

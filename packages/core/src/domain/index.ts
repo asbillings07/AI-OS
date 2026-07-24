@@ -35,6 +35,8 @@ export const EventTypes = {
   UserOnboardingQuestionAsked: "UserOnboardingQuestionAsked",
   /** User responded to an onboarding question with raw text (#70). */
   UserStatementRecorded: "UserStatementRecorded",
+  /** Statement belief extraction processing completed (#70). */
+  UserStatementProcessed: "UserStatementProcessed",
   /** Orion proposed a candidate belief from user understanding (#70, ADR-0016). */
   UserBeliefProposed: "UserBeliefProposed",
   /** User explicitly confirmed a proposed candidate belief (#70). */
@@ -333,6 +335,15 @@ export interface UserStatementRecordedPayload {
   readonly recordedAt: string;
 }
 
+export interface UserStatementProcessedPayload {
+  readonly statementId: string;
+  readonly statementEnvelopeId: string;
+  readonly sessionId: string;
+  readonly questionId: string;
+  readonly proposedBeliefIds: readonly string[];
+  readonly processedAt: string;
+}
+
 export interface UserBeliefProposedPayload {
   readonly beliefId: string;
   readonly sessionId: string;
@@ -426,6 +437,10 @@ export type UserOnboardingQuestionAskedEvent = EventEnvelope<
 export type UserStatementRecordedEvent = EventEnvelope<
   "UserStatementRecorded",
   UserStatementRecordedPayload
+>;
+export type UserStatementProcessedEvent = EventEnvelope<
+  "UserStatementProcessed",
+  UserStatementProcessedPayload
 >;
 export type UserBeliefProposedEvent = EventEnvelope<
   "UserBeliefProposed",

@@ -12,7 +12,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "slice": "tsx scripts/run-slice.ts",
+    "slice": "tsx scripts/run-slice.ts && tsx scripts/slice-onboarding.ts",
     "slice:onboarding": "tsx scripts/slice-onboarding.ts",
     "bootstrap": "tsx scripts/bootstrap.ts",
     "db:reset": "tsx scripts/db-reset.ts",
