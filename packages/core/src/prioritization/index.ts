@@ -129,6 +129,7 @@ function signalStrength(signals: readonly Signal[], kind: Signal["kind"]): numbe
 /** Source-neutral lead line for each Opportunity kind. */
 const LEAD_LINE: Record<Opportunity["kind"], string> = {
   ReplyNeeded: "You have not replied to this conversation.",
+  ActionNeeded: "An explicit action or invitation requires your attention.",
   ReviewNeeded: "A review is waiting on you.",
   AssignedActionNeeded: "You have been asked to take this on.",
   RiskDetected: "A check is failing on your work.",
@@ -160,11 +161,29 @@ function buildReason(
   signals: readonly Signal[],
   contribution: ImportanceContribution | null,
 ): string {
-  const parts = [LEAD_LINE[kind]];
+  const hasInvitation = signalStrength(signals, "Invitation") > 0;
+  const hasExplicitRequest = signalStrength(signals, "ExplicitRequest") > 0;
+
+  let lead: string;
+  if (hasInvitation) {
+    lead = "An invitation is waiting for your response.";
+  } else if (kind === "ActionNeeded") {
+    lead = "An explicit request requires your attention.";
+  } else {
+    lead = LEAD_LINE[kind];
+  }
+
+  const parts = [lead];
+
   if (signalStrength(signals, "DirectQuestion") > 0) parts.push("It asks a direct question.");
   if (signalStrength(signals, "FromKnownPerson") > 0) parts.push("You've exchanged messages with this person.");
   if (signalStrength(signals, "Commitment") > 0) parts.push("You've taken this on.");
   if (signalStrength(signals, "Aging") > 0) parts.push("It has been waiting a while.");
+
+  if (hasExplicitRequest && !hasInvitation && kind !== "ActionNeeded") {
+    parts.push("It requests explicit action or input.");
+  }
+
   const importanceFragment = importanceReasonFragment(contribution);
   if (importanceFragment) parts.push(importanceFragment);
   return parts.join(" ");
@@ -223,10 +242,14 @@ export function prioritize(
     const responsibilityStrength = Math.max(
       signalStrength(signals, "Commitment"),
       signalStrength(signals, "FromKnownPerson"),
+      signalStrength(signals, "ExplicitRequest") * 0.85,
+      signalStrength(signals, "Invitation") * 0.85,
     );
     const urgency = Math.max(
       signalStrength(signals, "Aging"),
-      signalStrength(signals, "DirectQuestion") > 0 ? 0.4 : 0.2,
+      signalStrength(signals, "Invitation") > 0 ? 0.75 : 0,
+      signalStrength(signals, "ExplicitRequest") > 0 ? 0.70 : 0,
+      signalStrength(signals, "DirectQuestion") > 0 ? 0.50 : 0.20,
     );
     const contribution = importanceBySubject.get(subjectKey(opportunity.subject)) ?? null;
     const importance = contribution?.score ?? NEUTRAL_IMPORTANCE;

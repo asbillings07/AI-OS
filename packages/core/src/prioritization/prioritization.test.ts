@@ -233,31 +233,32 @@ describe("cross-source ranking is source-neutral (#46)", () => {
   });
 });
 
+/** A #46-shaped action Event stamped with an OriginatorRef (see work-item-actions). */
+function actedOn(id: string, subject: { kind: string; id: string }, originator: OriginatorRef): ReturnType<typeof makeEvent> {
+  return makeEvent({
+    type: EventTypes.WorkItemActedOn,
+    source: "user",
+    id,
+    payload: { workItemId: `wi-${subject.kind}:${subject.id}`, subject, basisEventIds: ["basis"], originator },
+  });
+}
+
+function dismissed(id: string, subject: { kind: string; id: string }, originator: OriginatorRef): ReturnType<typeof makeEvent> {
+  return makeEvent({
+    type: EventTypes.WorkItemDismissed,
+    source: "user",
+    id,
+    payload: { workItemId: `wi-${subject.kind}:${subject.id}`, subject, basisEventIds: ["basis"], originator },
+  });
+}
+
+function foldImportance(events: ReturnType<typeof makeEvent>[]): PersonalImportanceState {
+  return events.reduce((state, event) => personalImportanceProjection.apply(state, event), NO_IMPORTANCE);
+}
+
+const DANA: OriginatorRef = { namespace: "gmail-skill", id: "dana@acme.com" };
+
 describe("Personal Importance integration (#65)", () => {
-  /** A #46-shaped action Event stamped with an OriginatorRef (see work-item-actions). */
-  function actedOn(id: string, subject: { kind: string; id: string }, originator: OriginatorRef): ReturnType<typeof makeEvent> {
-    return makeEvent({
-      type: EventTypes.WorkItemActedOn,
-      source: "user",
-      id,
-      payload: { workItemId: `wi-${subject.kind}:${subject.id}`, subject, basisEventIds: ["basis"], originator },
-    });
-  }
-
-  function dismissed(id: string, subject: { kind: string; id: string }, originator: OriginatorRef): ReturnType<typeof makeEvent> {
-    return makeEvent({
-      type: EventTypes.WorkItemDismissed,
-      source: "user",
-      id,
-      payload: { workItemId: `wi-${subject.kind}:${subject.id}`, subject, basisEventIds: ["basis"], originator },
-    });
-  }
-
-  function foldImportance(events: ReturnType<typeof makeEvent>[]): PersonalImportanceState {
-    return events.reduce((state, event) => personalImportanceProjection.apply(state, event), NO_IMPORTANCE);
-  }
-
-  const DANA: OriginatorRef = { namespace: "gmail-skill", id: "dana@acme.com" };
 
   function reviewRequested(
     id: string,
@@ -406,6 +407,156 @@ describe("Personal Importance integration (#65)", () => {
     expect(thread.importance).toBeCloseTo(0.75, 10);
     expect(review.importance).toBeCloseTo(0.75, 10);
     expect(originatorKey(DANA)).not.toBe(originatorKey(github));
+  });
+});
+
+describe("Explicit requests, invitations, and non-repetitive explanations (#88)", () => {
+  it("promotes action requests into Needs Attention with ActionNeeded or ReplyNeeded", () => {
+    const context = contextOf([
+      message({
+        threadId: "t-priya",
+        messageId: "m-priya",
+        from: { name: "Priya Nair", address: "priya@acme.com" },
+        subject: "Board update — need your input today",
+        body: "Can you send me the headline numbers for the board update today? Need your input today.",
+      }),
+      message({
+        threadId: "t-sam",
+        messageId: "m-sam",
+        from: { name: "Sam Rivera", address: "sam@partner.io" },
+        subject: "Contract draft",
+        body: "Sharing the contract draft. Please review and let me know if terms look right.",
+      }),
+      message({
+        threadId: "t-app",
+        messageId: "m-app",
+        from: { name: "Approval Bot", address: "no-reply@approvals.example.com" },
+        subject: "Action required: expense approval",
+        body: "Action required: please approve the expense report.",
+      }),
+    ]);
+
+    const ranked = buildWorkItems({ context, attention: NO_ATTENTION, now: NOON });
+    expect(ranked).toHaveLength(3);
+    expect(ranked.map((i) => i.band)).toEqual(["needs_attention", "needs_attention", "needs_attention"]);
+
+    const priya = ranked.find((i) => i.subject.id === "t-priya")!;
+    expect(priya.kind).toBe("ReplyNeeded");
+    expect(priya.reason).toContain("You have not replied to this conversation.");
+    expect(priya.reason).toContain("It requests explicit action or input.");
+
+    const sam = ranked.find((i) => i.subject.id === "t-sam")!;
+    expect(sam.kind).toBe("ReplyNeeded");
+    expect(sam.reason).toContain("You have not replied to this conversation.");
+    expect(sam.reason).toContain("It requests explicit action or input.");
+
+    const app = ranked.find((i) => i.subject.id === "t-app")!;
+    expect(app.kind).toBe("ActionNeeded");
+    expect(app.reason).toBe("An explicit request requires your attention.");
+    expect(app.reason).not.toContain("It requests explicit action or input."); // non-repetitive
+  });
+
+  it("promotes automated calendar invitations into Needs Attention as ActionNeeded (#88)", () => {
+    const context = contextOf([
+      message({
+        threadId: "t-cal",
+        messageId: "m-cal",
+        from: { name: "Calendar Bot", address: "no-reply@calendar.example.com" },
+        subject: "Calendar invitation: Product Sync",
+        body: "You have a meeting invitation to Product Sync. Please RSVP.",
+      }),
+    ]);
+
+    const ranked = buildWorkItems({ context, attention: NO_ATTENTION, now: NOON });
+    expect(ranked).toHaveLength(1);
+    const calItem = ranked[0]!;
+    expect(calItem.kind).toBe("ActionNeeded");
+    expect(calItem.band).toBe("needs_attention");
+    expect(calItem.reason).toBe("An invitation is waiting for your response.");
+    expect(calItem.reason).not.toContain("It is an invitation."); // non-repetitive
+  });
+
+  it("keeps informational FYIs in Can Wait and automated informational messages absent (#88)", () => {
+    const context = contextOf([
+      message({
+        threadId: "t-fyi",
+        messageId: "m-fyi",
+        from: { name: "Jordan Blake", address: "jordan@random.com" },
+        subject: "Quick idea to share (FYI)",
+        body: "Wanted to share an idea I had. No rush and nothing needed from you.",
+      }),
+      message({
+        threadId: "t-news",
+        messageId: "m-news",
+        from: { name: "The Weekly", address: "no-reply@weekly.example.com" },
+        subject: "Your Weekly Digest",
+        body: "Top stories this week.",
+      }),
+    ]);
+
+    const ranked = buildWorkItems({ context, attention: NO_ATTENTION, now: NOON });
+    expect(ranked).toHaveLength(1); // news thread produced no opportunity
+    expect(ranked[0]?.subject.id).toBe("t-fyi");
+    expect(ranked[0]?.band).toBe("can_wait");
+  });
+
+  it("explicit requests and invitations land in Needs Attention even at lowest Capacity (#88)", () => {
+    const context = contextOf([
+      message({
+        threadId: "t-req",
+        messageId: "m-req",
+        from: { name: "Alex", address: "alex@example.com" },
+        subject: "Action required on release",
+        body: "Action required: please approve the release checklist.",
+      }),
+    ]);
+
+    const opps = detectOpportunities(context, NOON);
+    // Lowest natural capacity: night + heavy load -> level 0.05 (attention threshold = 0.6825)
+    const lowestCapacity = estimateCapacity("2026-07-15T04:00:00.000Z", { activeWorkCount: 6 });
+    expect(lowestCapacity.level).toBeCloseTo(0.05);
+
+    const ranked = prioritize(opps, lowestCapacity);
+    expect(ranked[0]?.band).toBe("needs_attention");
+    expect(ranked[0]?.priority).toBeGreaterThan(0.6825);
+  });
+
+  it("explicit requests land in Needs Attention even with maximum negative learned originator importance (#88)", () => {
+    const alex: OriginatorRef = { namespace: "gmail-skill", id: "alex@example.com" };
+    const context = contextOf([
+      message({
+        threadId: "t-req",
+        messageId: "m-req",
+        from: { name: "Alex", address: "alex@example.com" },
+        subject: "Action required on release",
+        body: "Action required: please approve the release checklist.",
+      }),
+    ]);
+
+    const importance = foldImportance([
+      dismissed("act-1", { kind: "thread", id: "t-req" }, alex),
+      dismissed("act-2", { kind: "thread", id: "t-req" }, alex),
+    ]);
+
+    const ranked = buildWorkItems({ context, attention: NO_ATTENTION, importance, now: NOON });
+    expect(ranked[0]?.importance).toBeCloseTo(0.25, 10);
+    expect(ranked[0]?.band).toBe("needs_attention");
+  });
+
+  it("rebuild with fixed NOW produces identical Work Items (#88)", () => {
+    const context = contextOf([
+      message({
+        threadId: "t-inv",
+        messageId: "m-inv",
+        from: { name: "Bot", address: "no-reply@cal.com" },
+        subject: "Meeting invitation: Demo",
+        body: "Invitation to Demo. Accept or decline.",
+      }),
+    ]);
+
+    const items1 = buildWorkItems({ context, attention: NO_ATTENTION, now: NOON });
+    const items2 = buildWorkItems({ context, attention: NO_ATTENTION, now: NOON });
+    expect(items1).toEqual(items2);
   });
 });
 

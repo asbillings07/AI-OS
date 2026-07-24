@@ -43,6 +43,7 @@ export interface OpportunityBase<TKind extends string, TSubject extends SubjectR
 
 export type Opportunity =
   | OpportunityBase<"ReplyNeeded", { readonly kind: "thread"; readonly id: string }>
+  | OpportunityBase<"ActionNeeded", { readonly kind: "thread"; readonly id: string }>
   | OpportunityBase<"ReviewNeeded", { readonly kind: "review"; readonly id: string }>
   | OpportunityBase<"AssignedActionNeeded", { readonly kind: "assignment"; readonly id: string }>
   | OpportunityBase<"RiskDetected", { readonly kind: "check"; readonly id: string }>;
@@ -61,11 +62,13 @@ function groupBySubject(signals: Signal[]): Map<string, Signal[]> {
   return grouped;
 }
 
+const POSITIVE_CORROBORATING_SIGNALS = new Set(["Aging", "Commitment", "FromKnownPerson"]);
+
 /**
  * Derive conversation (thread) Opportunities from Context. Deterministic given
- * `now`. A thread yields a ReplyNeeded Opportunity only if it is actually awaiting
- * a reply; automated / low-value threads (which carry no AwaitingReply Signal)
- * yield nothing — silence is a valid output.
+ * `now`. A thread yields an Opportunity if an actionable signal (AwaitingReply,
+ * Invitation, or ExplicitRequest) is present; automated / low-value threads without
+ * actionable signals yield nothing — silence is a valid output.
  *
  * This is one of two detectors; collaborative-work Opportunities (reviews,
  * assignments, checks) are derived separately in
@@ -78,20 +81,38 @@ export function detectOpportunities(context: ContextState, now: string): ThreadO
   const opportunities: ThreadOpportunity[] = [];
 
   for (const threadSignals of bySubject.values()) {
+    const invitation = threadSignals.find((signal) => signal.kind === "Invitation");
+    const explicitRequest = threadSignals.find((signal) => signal.kind === "ExplicitRequest");
     const awaiting = threadSignals.find((signal) => signal.kind === "AwaitingReply");
-    if (!awaiting) {
+    const directQuestion = threadSignals.find((signal) => signal.kind === "DirectQuestion");
+
+    if (!awaiting && !invitation && !explicitRequest) {
       continue; // e.g. LikelyLowValue only — no value in acting.
     }
 
-    // Value builds from the awaiting-reply base and is raised by corroborating
-    // signals. Capped at 1. This measures VALUE, not priority.
+    const kind = awaiting ? "ReplyNeeded" : "ActionNeeded";
+
+    // Primary action signal selection in precedence order: Invitation > ExplicitRequest > AwaitingReply > DirectQuestion
+    let primaryBaseValue = 0.60;
+    if (invitation) {
+      primaryBaseValue = 0.80;
+    } else if (explicitRequest) {
+      primaryBaseValue = 0.75;
+    } else if (awaiting) {
+      primaryBaseValue = 0.60;
+    } else if (directQuestion) {
+      primaryBaseValue = 0.60;
+    }
+
+    // Correlated action family deduplication: positive boosts come strictly from independent positive signals
     const boost = threadSignals
-      .filter((signal) => signal.kind !== "AwaitingReply")
+      .filter((signal) => POSITIVE_CORROBORATING_SIGNALS.has(signal.kind))
       .reduce((sum, signal) => sum + signal.strength * 0.25, 0);
-    const value = Math.min(1, awaiting.strength * 0.6 + boost);
+    const value = Math.min(1, primaryBaseValue + boost);
 
     const sourceEventIds = [...new Set(threadSignals.flatMap((signal) => signal.sourceEventIds))];
-    const threadId = awaiting.subject.id;
+    const firstSignal = threadSignals[0]!;
+    const threadId = firstSignal.subject.id;
     const thread = context.threads[threadId];
 
     // The attention revision for a conversation is its newest inbound message by
@@ -102,7 +123,7 @@ export function detectOpportunities(context: ContextState, now: string): ThreadO
     const attentionBasisEventIds = latestMessageEventId ? [latestMessageEventId] : sourceEventIds;
 
     opportunities.push({
-      kind: "ReplyNeeded",
+      kind,
       subject: { kind: "thread", id: threadId },
       title: thread?.subject || "Conversation",
       value,

@@ -3,6 +3,7 @@ import { makeEvent } from "../events/index.js";
 import { EventTypes, type MessageReceivedPayload, type MessageSentPayload } from "../domain/index.js";
 import { contextProjection, latestThreadMessage, type ContextState } from "./context.js";
 import { detectSignals } from "./signals.js";
+import { detectOpportunities } from "../opportunity/index.js";
 import { timelineProjection } from "./timeline.js";
 import { buildWorkItems, attentionProjection } from "../index.js";
 
@@ -397,6 +398,111 @@ describe("Signal detection (deterministic)", () => {
     const awaiting = detectSignals(context, "2026-07-15T12:00:00.000Z").find((s) => s.kind === "AwaitingReply");
     expect(awaiting?.evidence.length).toBeGreaterThan(0);
     expect(awaiting?.sourceEventIds).toContain("evt-m1");
+  });
+
+  it("detects ExplicitRequest and Invitation with direct message event provenance (#88)", () => {
+    const context = fold([
+      message({
+        threadId: "t1",
+        messageId: "m1",
+        subject: "Invitation to Q3 Planning",
+        body: "You are invited you to join our Q3 planning session. Please RSVP.",
+      }),
+      message({
+        threadId: "t2",
+        messageId: "m2",
+        subject: "Action required on contract",
+        body: "Please review and sign the attached draft.",
+      }),
+    ]);
+
+    const sigsT1 = detectSignals(context, "2026-07-15T12:00:00.000Z").filter((s) => s.subject.id === "t1");
+    const invSignal = sigsT1.find((s) => s.kind === "Invitation");
+    expect(invSignal).toBeDefined();
+    expect(invSignal?.strength).toBe(0.9);
+    expect(invSignal?.sourceEventIds).toEqual(["evt-m1"]);
+
+    const sigsT2 = detectSignals(context, "2026-07-15T12:00:00.000Z").filter((s) => s.subject.id === "t2");
+    const reqSignal = sigsT2.find((s) => s.kind === "ExplicitRequest");
+    expect(reqSignal).toBeDefined();
+    expect(reqSignal?.strength).toBe(0.85);
+    expect(reqSignal?.sourceEventIds).toEqual(["evt-m2"]);
+  });
+
+  it("automated sender with actionable invitation emits both LikelyLowValue and Invitation (#88)", () => {
+    const context = fold([
+      message({
+        threadId: "t1",
+        messageId: "m1",
+        from: { address: "no-reply@calendar.example.com", name: "Calendar Bot" },
+        subject: "Calendar invitation: Product Sync",
+        body: "You have a meeting invitation to Product Sync. Accept or decline below.",
+      }),
+    ]);
+
+    const sigs = detectSignals(context, "2026-07-15T12:00:00.000Z");
+    const kinds = sigs.map((s) => s.kind);
+    expect(kinds).toContain("LikelyLowValue");
+    expect(kinds).toContain("Invitation");
+  });
+
+  it("automated informational message without request produces NO opportunities (#88)", () => {
+    const context = fold([
+      message({
+        threadId: "t1",
+        messageId: "m1",
+        from: { address: "no-reply@weekly.example.com", name: "The Weekly" },
+        subject: "Your Weekly Digest",
+        body: "Here are this week's top stories and updates.",
+      }),
+    ]);
+
+    const opps = detectOpportunities(context, "2026-07-15T12:00:00.000Z");
+    expect(opps).toHaveLength(0);
+  });
+
+  it("does NOT emit Invitation or ExplicitRequest for informational or completed phrases (#88)", () => {
+    const negativeCases = [
+      { subject: "Meeting notes from yesterday", body: "Here are the notes from our call." },
+      { subject: "Your calendar has been updated", body: "Room change for tomorrow." },
+      { subject: "Event recap", body: "Highlights from last week's conference." },
+      { subject: "Webinar recording", body: "Watch the session recording anytime." },
+      { subject: "Approval received", body: "Your expense report was approved." },
+      { subject: "Meet our new leadership team", body: "Welcoming our new VP." },
+      { subject: "Meeting invitation accepted", body: "Dana accepted your invitation." },
+      { subject: "Calendar invitation declined", body: "Sam declined the invite." },
+      { subject: "Invitation canceled", body: "The sync has been canceled." },
+      { subject: "RSVP confirmed", body: "Your spot is confirmed." },
+    ];
+
+    negativeCases.forEach((spec, idx) => {
+      const context = fold([
+        message({
+          threadId: `t-${idx}`,
+          messageId: `m-${idx}`,
+          subject: spec.subject,
+          body: spec.body,
+        }),
+      ]);
+      const kinds = detectSignals(context, "2026-07-15T12:00:00.000Z").map((s) => s.kind);
+      expect(kinds).not.toContain("Invitation");
+      expect(kinds).not.toContain("ExplicitRequest");
+    });
+  });
+
+  it("declarative requests do not claim to ask a direct question (#88)", () => {
+    const context = fold([
+      message({
+        threadId: "t1",
+        messageId: "m1",
+        subject: "Contract signature needed",
+        body: "Please sign the contract by Friday.",
+      }),
+    ]);
+
+    const kinds = detectSignals(context, "2026-07-15T12:00:00.000Z").map((s) => s.kind);
+    expect(kinds).toContain("ExplicitRequest");
+    expect(kinds).not.toContain("DirectQuestion");
   });
 });
 
