@@ -629,6 +629,57 @@ describe("Candidate Belief Extraction from Natural Language (#71)", () => {
     expect(replayedBelief.claim).toBe("Family is top priority");
   });
 
+  it("Contract Check 7: Reject sensitive claims attributed to third parties even when verbatim evidence is returned", async () => {
+    const store = new SqliteEventStore(":memory:");
+    const bus = new InProcessEventBus();
+    const host = new ProjectionHost(onboardingProjection);
+    const runtime = new OrionRuntime({ bus, store, projections: [host as ProjectionHost<unknown>] });
+
+    const policyGate = new DeterministicPolicyGate({
+      allowedCategories: ALL_CATEGORIES,
+    });
+
+    const ai = createMockAi(async (req) => ({
+      candidates: [
+        {
+          subject: "health",
+          claim: "I have cancer",
+          category: "values",
+          temporalScope: "durable",
+          evidenceText: "My friend has cancer",
+          supportingEvidence: [
+            {
+              statementEnvelopeId: req.currentStatementEnvelopeId,
+              evidenceText: "My friend has cancer",
+            },
+          ],
+          confidence: 0.95,
+        },
+      ],
+    }));
+
+    const extractor = new LlmBeliefExtractor({ ai });
+    const engine = new OnboardingEngine({
+      runtime,
+      extractor,
+      policyGate,
+      getProjectionState: () => host.state,
+    });
+
+    const { sessionId, questionId } = await engine.startSession({ sessionId: "sess_third_party_sensitive", now: NOW });
+    const { proposedBeliefs } = await engine.recordStatement({
+      sessionId,
+      questionId,
+      rawText: "My friend has cancer.",
+      now: NOW,
+    });
+
+    // The proposal must be rejected by the DeterministicPolicyGate because the sensitive evidence attributes the trait to 'friend', not the user
+    expect(proposedBeliefs).toHaveLength(0);
+    const session = host.state.sessions.get(sessionId)!;
+    expect(session.beliefs.size).toBe(0);
+  });
+
   it("Acceptance Case: User correction of an earlier statement produces corrected belief candidate", async () => {
     const store = new SqliteEventStore(":memory:");
     const bus = new InProcessEventBus();
@@ -662,8 +713,8 @@ describe("Candidate Belief Extraction from Natural Language (#71)", () => {
             claim: "Engineering manager",
             category: "roles_and_relationships",
             temporalScope: "durable",
-            evidenceText: "engineering manager",
-            supportingEvidence: [{ statementEnvelopeId: req.currentStatementEnvelopeId, evidenceText: "engineering manager" }],
+            evidenceText: "I am an engineering manager",
+            supportingEvidence: [{ statementEnvelopeId: req.currentStatementEnvelopeId, evidenceText: "I am an engineering manager" }],
             confidence: 0.95,
           },
         ],

@@ -65,6 +65,12 @@ export interface BeliefExtractor {
 const SENSITIVE_TOPIC_PATTERN =
   /\b(health|medical|doctor|illness|diagnosis|treatment|medication|cancer|diabetes|therapy|financial|income|salary|debt|mortgage|bank|tax|political|election|vote|party|religion|church|faith|family|children|child|kid|kids|spouse|partner|marriage|marital)\b/i;
 
+const THIRD_PARTY_PATTERN =
+  /\b(friend|friends|manager|boss|colleague|colleagues|coworker|coworkers|mother|father|parent|parents|sister|sisters|brother|brothers|daughter|daughters|son|sons|spouse|partner|wife|husband|cousin|cousins|aunt|uncle|neighbor|neighbors|doctor|doctors|physician|patient|patients|someone|somebody|other people|third party|he|she|they|his|her|their|him|them)\b/i;
+
+const FIRST_PERSON_PRONOUN_PATTERN =
+  /\b(I|me|myself|mine|my own|I'm|I've|I'll|I'd)\b/i;
+
 const PROHIBITED_PATTERN =
   /\b(illegal|unlawful|explicit-pornography|hate-speech)\b/i;
 
@@ -203,6 +209,24 @@ export class DeterministicPolicyGate {
     // Reject sensitive/protected concepts unless they occur in the independently verified source evidence spans
     if (claimIsSensitive && !evidenceIsSensitive) {
       return { valid: false };
+    }
+
+    // Third-party mention & self-attribution safety check (#71):
+    // 1. Any evidence span containing third-party subjects without first-person self-attribution is rejected.
+    // 2. Sensitive claims cannot be authorized by evidence spans that attribute the sensitive topic to a third party (e.g., "My friend has cancer" -> "I have cancer").
+    const allSpans = [candidate.evidenceText, ...candidate.supportingEvidence.map((s) => s.evidenceText)];
+
+    for (const span of allSpans) {
+      const hasThirdParty = THIRD_PARTY_PATTERN.test(span);
+      const hasFirstPerson = FIRST_PERSON_PRONOUN_PATTERN.test(span);
+
+      if (hasThirdParty && !hasFirstPerson) {
+        return { valid: false };
+      }
+
+      if (claimIsSensitive && hasThirdParty) {
+        return { valid: false };
+      }
     }
 
     const isSensitive = claimIsSensitive || evidenceIsSensitive;
