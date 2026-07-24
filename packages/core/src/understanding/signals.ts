@@ -9,6 +9,8 @@ export type SignalKind =
   | "FromKnownPerson"
   | "Aging"
   | "LikelyLowValue"
+  | "ExplicitRequest"
+  | "Invitation"
   // Collaborative-work signals (reviews, assignments, checks).
   | "PendingReview"
   | "Assigned"
@@ -35,7 +37,13 @@ export interface Signal {
 }
 
 const AGING_HOURS = 24;
-const QUESTION_PATTERN = /\?|\b(can you|could you|would you|please|let me know|thoughts|when can|are you able)\b/i;
+const QUESTION_PATTERN = /\?|\b(can you|could you|would you|when can|are you able)\b/i;
+const COMPLETED_INVITATION_PATTERN =
+  /\b((invitation|invite|rsvp)\b[\w\s]{0,20}?\b(accepted|declined|confirmed|canceled|cancelled)|(accepted|declined|confirmed|canceled|cancelled)\b[\w\s]{0,20}?\b(invitation|invite|rsvp)|(meeting|sync|event)\b[\w\s]{0,20}?\b(canceled|cancelled)|(canceled|cancelled)\b[\w\s]{0,20}?\b(meeting|sync|event)|rsvp\s+(confirmed|accepted|declined))\b/i;
+const EXPLICIT_REQUEST_PATTERN =
+  /\b(action required|please review|please approve|need your input|feedback needed|please sign|need you to|could you send|would you send|send me|let me know|any thoughts|thoughts on)\b/i;
+const INVITATION_PATTERN =
+  /\b(invited you|invitation to|please rsvp|rsvp required|accept or decline|calendar invitation|meeting invitation|schedule a call)\b/i;
 
 function hoursBetween(fromIso: string, toIso: string): number {
   return (new Date(toIso).getTime() - new Date(fromIso).getTime()) / 3_600_000;
@@ -43,6 +51,21 @@ function hoursBetween(fromIso: string, toIso: string): number {
 
 function threadEventIds(thread: ThreadContext): string[] {
   return thread.messages.map((message) => message.eventId);
+}
+
+/**
+ * Inbound messages in the active turn (messages since the last outbound message,
+ * or all messages if the user hasn't replied yet).
+ */
+function activeInboundTurnMessages(thread: ThreadContext) {
+  let lastOutboundIdx = -1;
+  for (let i = thread.messages.length - 1; i >= 0; i--) {
+    if (thread.messages[i]?.direction === "outbound") {
+      lastOutboundIdx = i;
+      break;
+    }
+  }
+  return lastOutboundIdx === -1 ? thread.messages : thread.messages.slice(lastOutboundIdx + 1);
 }
 
 function stableDedupe(ids: string[]): string[] {
@@ -84,6 +107,43 @@ export function detectSignals(context: ContextState, now: string): Signal[] {
     if (!isOutbound) {
       const lastSender = latestMsg.from.address;
       const automated = isAutomatedSender(lastSender);
+      const activeInboundMessages = activeInboundTurnMessages(thread);
+
+      let isInvitation = false;
+      let isExplicitRequest = false;
+
+      for (let i = 0; i < activeInboundMessages.length; i++) {
+        const msg = activeInboundMessages[i]!;
+        const msgText = `${msg.subject} ${msg.body}`;
+        const directMsgEventId = [msg.eventId];
+
+        if (!isInvitation && INVITATION_PATTERN.test(msgText)) {
+          const isCompleted = activeInboundMessages
+            .slice(i)
+            .some((m) => COMPLETED_INVITATION_PATTERN.test(`${m.subject} ${m.body}`));
+          if (!isCompleted) {
+            isInvitation = true;
+            signals.push({
+              kind: "Invitation",
+              subject,
+              strength: 0.9,
+              evidence: "The message is an event or meeting invitation.",
+              sourceEventIds: directMsgEventId,
+            });
+          }
+        }
+
+        if (!isExplicitRequest && EXPLICIT_REQUEST_PATTERN.test(msgText)) {
+          isExplicitRequest = true;
+          signals.push({
+            kind: "ExplicitRequest",
+            subject,
+            strength: 0.85,
+            evidence: "The message requests explicit action or input.",
+            sourceEventIds: directMsgEventId,
+          });
+        }
+      }
 
       if (automated) {
         signals.push({
@@ -93,16 +153,18 @@ export function detectSignals(context: ContextState, now: string): Signal[] {
           evidence: `From an automated sender (${lastSender}).`,
           sourceEventIds: eventIds,
         });
-        continue;
+        if (!isInvitation && !isExplicitRequest) {
+          continue;
+        }
+      } else {
+        signals.push({
+          kind: "AwaitingReply",
+          subject,
+          strength: 1,
+          evidence: "You have not replied to this conversation.",
+          sourceEventIds: eventIds,
+        });
       }
-
-      signals.push({
-        kind: "AwaitingReply",
-        subject,
-        strength: 1,
-        evidence: "You have not replied to this conversation.",
-        sourceEventIds: eventIds,
-      });
 
       // DirectQuestion scans only the latest inbound message, not the whole conversation history
       const latestInboundText = `${latestMsg.subject} ${latestMsg.body}`;

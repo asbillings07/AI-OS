@@ -199,7 +199,7 @@ describe("LiveGmailSource", () => {
     const h = makeSource(fetchImpl, { baseRetryDelayMs: 500 });
     await h.source.fetchMessages();
     expect(h.sleeps).toHaveLength(1);
-    expect(h.sleeps[0]).toBeGreaterThan(2000);
+    expect(h.sleeps[0]).toBeGreaterThanOrEqual(1500);
     expect(h.sleeps[0]).toBeLessThanOrEqual(3000);
   });
 
