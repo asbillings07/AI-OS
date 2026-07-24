@@ -55,8 +55,8 @@ Rather than conflating origin, derivation, verification, and state into a single
    - `rejected`: Explicitly dismissed by the user.
    - `forgotten`: Soft-deleted / removed per user privacy request.
    - *(Derived temporal conditions)*:
-     - `not_yet_effective`: Derived condition when a belief's start time is in the future (`now < validFrom`).
-     - `expired`: Derived condition when an explicit expiration window has passed (`expiresAt` exists and `now >= expiresAt`). Both `not_yet_effective` and `expired` conditions render a belief temporally ineligible for behavioral influence until applicable.
+     - `not_yet_effective`: Derived condition when a belief's start time is in the future (`now < validFrom`). A `not_yet_effective` belief becomes eligible once `now >= validFrom`.
+     - `expired`: Derived condition when an explicit expiration window has passed (`expiresAt` exists and `now >= expiresAt`). An `expired` belief remains permanently ineligible unless a new event renews or replaces the belief.
 
 #### Deterministic Authority Precedence
 
@@ -134,12 +134,13 @@ User control over understanding must be explicit, granular, and inspectable (#59
 
 Active beliefs guide Orion according to constrained actionability tiers based on category policy gate, belief lifecycle state, and temporal eligibility:
 
-| Category Policy Gate | Belief Lifecycle State & Temporal Condition | Permitted Influence |
+| Category Policy Gate & State | Belief Lifecycle State & Temporal Condition | Permitted Influence |
 | --- | --- | --- |
-| **`allowed`** | **Declared or confirmed `active`** (`validFrom <= now < expiresAt`) | Reversible ranking, presentation, and uncertain suggestions as policy permits. |
-| **`allowed`** | **`candidate` or `active` (Eligible unconfirmed)** (`validFrom <= now < expiresAt`) | Ask for confirmation; cautious reversible influence only when explicitly allowed by policy. |
-| **`confirmation_required`** (or **`opt_in`** with confirmation) | **`candidate` or `active`** (`validFrom <= now < expiresAt`) | Ask for explicit confirmation only; no ranking or presentation influence before confirmation. |
-| **`opt_in`** (not granted) | No belief exists | Ineligible. No collection, candidate extraction, or processing occurs. |
+| **`allowed`** (or **`opt_in`** with granted consent & `allowed`) | **Declared or confirmed `active`** (`now >= validFrom` AND [`expiresAt` is absent OR `now < expiresAt`]) | Reversible ranking, presentation, and uncertain suggestions as policy permits. |
+| **`allowed`** (or **`opt_in`** with granted consent & `allowed`) | **`candidate` or `active` (Eligible unconfirmed)** (`now >= validFrom` AND [`expiresAt` is absent OR `now < expiresAt`]) | Ask for confirmation; cautious reversible influence only when explicitly allowed by policy. |
+| **`confirmation_required`** (or **`opt_in`** with granted consent & `confirmation_required`) | **Unconfirmed `candidate`** (`now >= validFrom` AND [`expiresAt` is absent OR `now < expiresAt`]) | Ask for explicit confirmation only; no ranking or presentation influence before confirmation. |
+| **`confirmation_required`** (or **`opt_in`** with granted consent & `confirmation_required`) | **Confirmed `active`** (`now >= validFrom` AND [`expiresAt` is absent OR `now < expiresAt`]) | Reversible ranking, presentation, and uncertain suggestions as policy permits. |
+| **`opt_in`** (consent not granted) | No belief exists | Ineligible. No collection, candidate extraction, or processing occurs. |
 | **`prohibited`** | No belief stored or projected | Ineligible. Extraction is blocked by system policy; sanitized control metadata excludes claim and evidence. |
 | Any | **Ineligible lifecycle state or temporal condition** (`contradicted`, `superseded`, `rejected`, `forgotten`, `not_yet_effective`, or `expired`) | Ineligible for operational ranking, presentation, suggestions, or confirmation check-ins. Retained control metadata is used strictly for auditability, lineage, and preventing replay reactivation. |
 
