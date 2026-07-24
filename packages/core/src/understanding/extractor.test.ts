@@ -781,6 +781,68 @@ describe("Candidate Belief Extraction from Natural Language (#71)", () => {
     expect(session.beliefs.size).toBe(0);
   });
 
+  it("Contract Check 10: Reject sensitive claims where first-person pronoun is near third-party topic (e.g. 'I support Sam through cancer', 'I am worried about Sam's cancer')", async () => {
+    const store = new SqliteEventStore(":memory:");
+    const bus = new InProcessEventBus();
+    const host = new ProjectionHost(onboardingProjection);
+    const runtime = new OrionRuntime({ bus, store, projections: [host as ProjectionHost<unknown>] });
+
+    const policyGate = new DeterministicPolicyGate({
+      allowedCategories: ALL_CATEGORIES,
+    });
+
+    const ai = createMockAi(async (req) => ({
+      candidates: [
+        {
+          subject: "health",
+          claim: "I have cancer",
+          category: "values",
+          temporalScope: "durable",
+          evidenceText: req.currentStatement.includes("support")
+            ? "I support Sam through cancer treatment"
+            : "I am worried about Sam's cancer",
+          supportingEvidence: [
+            {
+              statementEnvelopeId: req.currentStatementEnvelopeId,
+              evidenceText: req.currentStatement.includes("support")
+                ? "I support Sam through cancer treatment"
+                : "I am worried about Sam's cancer",
+            },
+          ],
+          confidence: 0.95,
+        },
+      ],
+    }));
+
+    const extractor = new LlmBeliefExtractor({ ai });
+    const engine = new OnboardingEngine({
+      runtime,
+      extractor,
+      policyGate,
+      getProjectionState: () => host.state,
+    });
+
+    // Sub-case A: "I support Sam through cancer treatment"
+    const sessA = await engine.startSession({ sessionId: "sess_fp_proximity_a", now: NOW });
+    const resA = await engine.recordStatement({
+      sessionId: sessA.sessionId,
+      questionId: sessA.questionId,
+      rawText: "I support Sam through cancer treatment.",
+      now: NOW,
+    });
+    expect(resA.proposedBeliefs).toHaveLength(0);
+
+    // Sub-case B: "I am worried about Sam's cancer"
+    const sessB = await engine.startSession({ sessionId: "sess_fp_proximity_b", now: NOW });
+    const resB = await engine.recordStatement({
+      sessionId: sessB.sessionId,
+      questionId: sessB.questionId,
+      rawText: "I am worried about Sam's cancer.",
+      now: NOW,
+    });
+    expect(resB.proposedBeliefs).toHaveLength(0);
+  });
+
   it("Acceptance Case: User correction of an earlier statement produces corrected belief candidate", async () => {
     const store = new SqliteEventStore(":memory:");
     const bus = new InProcessEventBus();
