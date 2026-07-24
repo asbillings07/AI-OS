@@ -504,6 +504,20 @@ describe("Signal detection (deterministic)", () => {
     expect(kinds).toContain("ExplicitRequest");
     expect(kinds).not.toContain("DirectQuestion");
   });
+
+  it("detects explicit requests and invitations when 'updated' or 'accepted' is in body without suppressing request (#88)", () => {
+    // 1. "I updated the contract. Please review." -> ExplicitRequest
+    const c1 = fold([message({ threadId: "t1", messageId: "m1", subject: "Contract update", body: "I updated the contract. Please review." })]);
+    expect(detectSignals(c1, "2026-07-15T12:00:00.000Z").map((s) => s.kind)).toContain("ExplicitRequest");
+
+    // 2. "The agenda was updated. Please RSVP." -> Invitation
+    const c2 = fold([message({ threadId: "t2", messageId: "m2", subject: "Agenda update", body: "The agenda was updated. Please RSVP." })]);
+    expect(detectSignals(c2, "2026-07-15T12:00:00.000Z").map((s) => s.kind)).toContain("Invitation");
+
+    // 3. "Your request was accepted; please sign the agreement." -> ExplicitRequest
+    const c3 = fold([message({ threadId: "t3", messageId: "m3", subject: "Request accepted", body: "Your request was accepted; please sign the agreement." })]);
+    expect(detectSignals(c3, "2026-07-15T12:00:00.000Z").map((s) => s.kind)).toContain("ExplicitRequest");
+  });
 });
 
 describe("Timeline projection", () => {

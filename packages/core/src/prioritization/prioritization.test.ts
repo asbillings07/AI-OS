@@ -13,6 +13,10 @@ import { estimateCapacity } from "../capacity/index.js";
 import { attentionProjection } from "../attention/index.js";
 import { personalImportanceProjection, NEUTRAL_IMPORTANCE, type PersonalImportanceState } from "../importance/index.js";
 import { buildWorkItems, prioritize, compareWorkItems, workItemId, type WorkItem } from "./index.js";
+import { InProcessEventBus } from "../bus/index.js";
+import { SqliteEventStore } from "../store/index.js";
+import { OrionRuntime } from "../runtime/index.js";
+import { ProjectionHost } from "../projection/index.js";
 
 const NO_ATTENTION = attentionProjection.init();
 const NO_IMPORTANCE = personalImportanceProjection.init();
@@ -420,12 +424,20 @@ describe("Explicit requests, invitations, and non-repetitive explanations (#88)"
         subject: "Board update — need your input today",
         body: "Can you send me the headline numbers for the board update today? Need your input today.",
       }),
+      // Exact two-message reproduction of the real g-sam-1 / g-sam-2 dogfood fixture
       message({
-        threadId: "t-sam",
-        messageId: "m-sam",
+        threadId: "th-sam",
+        messageId: "g-sam-1",
         from: { name: "Sam Rivera", address: "sam@partner.io" },
         subject: "Contract draft",
-        body: "Sharing the contract draft. Please review and let me know if terms look right.",
+        body: "Sharing the contract draft for the partnership. Let me know if the terms look right to you.",
+      }),
+      message({
+        threadId: "th-sam",
+        messageId: "g-sam-2",
+        from: { name: "Sam Rivera", address: "sam@partner.io" },
+        subject: "Re: Contract draft",
+        body: "Following up on the contract draft — any thoughts before Friday?",
       }),
       message({
         threadId: "t-app",
@@ -445,8 +457,10 @@ describe("Explicit requests, invitations, and non-repetitive explanations (#88)"
     expect(priya.reason).toContain("You have not replied to this conversation.");
     expect(priya.reason).toContain("It requests explicit action or input.");
 
-    const sam = ranked.find((i) => i.subject.id === "t-sam")!;
+    const sam = ranked.find((i) => i.subject.id === "th-sam")!;
     expect(sam.kind).toBe("ReplyNeeded");
+    expect(sam.band).toBe("needs_attention");
+    expect(sam.priority).toBeCloseTo(0.73, 2);
     expect(sam.reason).toContain("You have not replied to this conversation.");
     expect(sam.reason).toContain("It requests explicit action or input.");
 
@@ -543,8 +557,8 @@ describe("Explicit requests, invitations, and non-repetitive explanations (#88)"
     expect(ranked[0]?.band).toBe("needs_attention");
   });
 
-  it("rebuild with fixed NOW produces identical Work Items (#88)", () => {
-    const context = contextOf([
+  it("rebuilds identical Work Items from the event log alone (#88)", async () => {
+    const events = [
       message({
         threadId: "t-inv",
         messageId: "m-inv",
@@ -552,11 +566,54 @@ describe("Explicit requests, invitations, and non-repetitive explanations (#88)"
         subject: "Meeting invitation: Demo",
         body: "Invitation to Demo. Accept or decline.",
       }),
-    ]);
+    ];
 
-    const items1 = buildWorkItems({ context, attention: NO_ATTENTION, now: NOON });
-    const items2 = buildWorkItems({ context, attention: NO_ATTENTION, now: NOON });
-    expect(items1).toEqual(items2);
+    const store1 = new SqliteEventStore(":memory:");
+    const store2 = new SqliteEventStore(":memory:");
+    try {
+      for (const e of events) {
+        await store1.append(e);
+        await store2.append(e);
+      }
+
+      const context1 = new ProjectionHost(contextProjection);
+      const attention1 = new ProjectionHost(attentionProjection);
+      const importance1 = new ProjectionHost(personalImportanceProjection);
+      const runtime1 = new OrionRuntime({
+        bus: new InProcessEventBus(),
+        store: store1,
+        projections: [context1, attention1, importance1],
+      });
+      await runtime1.rebuild();
+
+      const context2 = new ProjectionHost(contextProjection);
+      const attention2 = new ProjectionHost(attentionProjection);
+      const importance2 = new ProjectionHost(personalImportanceProjection);
+      const runtime2 = new OrionRuntime({
+        bus: new InProcessEventBus(),
+        store: store2,
+        projections: [context2, attention2, importance2],
+      });
+      await runtime2.rebuild();
+
+      const items1 = buildWorkItems({
+        context: context1.state,
+        attention: attention1.state,
+        importance: importance1.state,
+        now: NOON,
+      });
+      const items2 = buildWorkItems({
+        context: context2.state,
+        attention: attention2.state,
+        importance: importance2.state,
+        now: NOON,
+      });
+
+      expect(items1).toEqual(items2);
+    } finally {
+      store1.close();
+      store2.close();
+    }
   });
 });
 

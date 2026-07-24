@@ -38,9 +38,9 @@ export interface Signal {
 
 const AGING_HOURS = 24;
 const QUESTION_PATTERN = /\?|\b(can you|could you|would you|when can|are you able)\b/i;
-const COMPLETED_INVITATION_PATTERN = /\b(accepted|declined|canceled|cancelled|confirmed|updated)\b/i;
+const COMPLETED_INVITATION_PATTERN = /\b(accepted|declined|canceled|cancelled|confirmed)\b/i;
 const EXPLICIT_REQUEST_PATTERN =
-  /\b(action required|please review|please approve|need your input|feedback needed|please sign|need you to|could you send|would you send|send me|let me know)\b/i;
+  /\b(action required|please review|please approve|need your input|feedback needed|please sign|need you to|could you send|would you send|send me|let me know|any thoughts|thoughts on|following up)\b/i;
 const INVITATION_PATTERN =
   /\b(invited you|invitation to|please rsvp|rsvp required|accept or decline|calendar invitation|meeting invitation|schedule a call)\b/i;
 
@@ -50,6 +50,21 @@ function hoursBetween(fromIso: string, toIso: string): number {
 
 function threadEventIds(thread: ThreadContext): string[] {
   return thread.messages.map((message) => message.eventId);
+}
+
+/**
+ * Inbound messages in the active turn (messages since the last outbound message,
+ * or all messages if the user hasn't replied yet).
+ */
+function activeInboundTurnMessages(thread: ThreadContext) {
+  let lastOutboundIdx = -1;
+  for (let i = thread.messages.length - 1; i >= 0; i--) {
+    if (thread.messages[i]?.direction === "outbound") {
+      lastOutboundIdx = i;
+      break;
+    }
+  }
+  return lastOutboundIdx === -1 ? thread.messages : thread.messages.slice(lastOutboundIdx + 1);
 }
 
 function stableDedupe(ids: string[]): string[] {
@@ -91,32 +106,39 @@ export function detectSignals(context: ContextState, now: string): Signal[] {
     if (!isOutbound) {
       const lastSender = latestMsg.from.address;
       const automated = isAutomatedSender(lastSender);
-      const latestInboundText = `${latestMsg.subject} ${latestMsg.body}`;
-      const directMsgEventId = [latestMsg.eventId];
+      const activeInboundMessages = activeInboundTurnMessages(thread);
 
       let isInvitation = false;
       let isExplicitRequest = false;
 
-      if (!COMPLETED_INVITATION_PATTERN.test(latestInboundText)) {
-        if (INVITATION_PATTERN.test(latestInboundText)) {
-          isInvitation = true;
-          signals.push({
-            kind: "Invitation",
-            subject,
-            strength: 0.9,
-            evidence: "The message is an event or meeting invitation.",
-            sourceEventIds: directMsgEventId,
-          });
+      for (const msg of activeInboundMessages) {
+        const msgText = `${msg.subject} ${msg.body}`;
+        const directMsgEventId = [msg.eventId];
+
+        if (INVITATION_PATTERN.test(msgText) && !COMPLETED_INVITATION_PATTERN.test(msgText)) {
+          if (!isInvitation) {
+            isInvitation = true;
+            signals.push({
+              kind: "Invitation",
+              subject,
+              strength: 0.9,
+              evidence: "The message is an event or meeting invitation.",
+              sourceEventIds: directMsgEventId,
+            });
+          }
         }
-        if (EXPLICIT_REQUEST_PATTERN.test(latestInboundText)) {
-          isExplicitRequest = true;
-          signals.push({
-            kind: "ExplicitRequest",
-            subject,
-            strength: 0.85,
-            evidence: "The message requests explicit action or input.",
-            sourceEventIds: directMsgEventId,
-          });
+
+        if (EXPLICIT_REQUEST_PATTERN.test(msgText)) {
+          if (!isExplicitRequest) {
+            isExplicitRequest = true;
+            signals.push({
+              kind: "ExplicitRequest",
+              subject,
+              strength: 0.85,
+              evidence: "The message requests explicit action or input.",
+              sourceEventIds: directMsgEventId,
+            });
+          }
         }
       }
 
@@ -142,6 +164,7 @@ export function detectSignals(context: ContextState, now: string): Signal[] {
       }
 
       // DirectQuestion scans only the latest inbound message, not the whole conversation history
+      const latestInboundText = `${latestMsg.subject} ${latestMsg.body}`;
       if (QUESTION_PATTERN.test(latestInboundText)) {
         signals.push({
           kind: "DirectQuestion",
