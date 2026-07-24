@@ -373,6 +373,7 @@ export interface UserStatementProcessedPayload {
   readonly policyVersion: string;
   readonly inferenceMechanism: string;
   readonly promptSchemaVersion: string;
+  readonly modelName?: string;
   readonly processedAt: string;
 }
 
@@ -393,6 +394,7 @@ export interface UserBeliefProposedPayload {
   readonly categoryPolicy: "allowed" | "confirmation_required";
   readonly inferenceMechanism: string;
   readonly promptSchemaVersion: string;
+  readonly modelName?: string;
   readonly validFrom: string;
   readonly expiresAt?: string;
   readonly proposedAt: string;

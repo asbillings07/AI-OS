@@ -652,4 +652,59 @@ describe("withCache composed through createAi() (#80): AiLayer + cache together"
     expect(hit?.provider).toBe("audited");
     expect(hit?.modelName).toBe("audited-v1");
   });
+
+  it("deeply isolates nested extraction candidates and supporting evidence across cache hits", async () => {
+    let calls = 0;
+    const provider: AiProvider = {
+      name: "extract-test",
+      modelName: "extract-v1",
+      async summarize() {
+        throw new Error("unused");
+      },
+      async classify() {
+        throw new Error("unused");
+      },
+      async extractBeliefs() {
+        calls++;
+        return {
+          candidates: [
+            {
+              subject: "family",
+              claim: "Family first",
+              category: "values",
+              temporalScope: "durable",
+              evidenceText: "Family first",
+              supportingEvidence: [{ statementEnvelopeId: "env1", evidenceText: "Family first" }],
+              confidence: 0.9,
+            },
+          ],
+          inferenceMechanism: "extract-test:extract-v1",
+          promptSchemaVersion: "v0.1",
+          modelName: "extract-v1",
+        };
+      },
+    };
+
+    const ai = createAi({ provider, env: {} });
+    const req = {
+      currentQuestion: "What matters?",
+      currentStatement: "Family first",
+      currentStatementEnvelopeId: "env1",
+      priorTurns: [],
+      eligibleCategories: ["values"],
+    };
+
+    const res1 = await ai.extractBeliefs(req);
+    expect(calls).toBe(1);
+
+    // Mutate res1's candidates and nested supporting evidence array
+    (res1.candidates[0] as any).claim = "MUTATED_CLAIM";
+    (res1.candidates[0]!.supportingEvidence[0] as any).evidenceText = "MUTATED_EVIDENCE";
+
+    // Second call hit cache
+    const res2 = await ai.extractBeliefs(req);
+    expect(calls).toBe(1);
+    expect(res2.candidates[0]!.claim).toBe("Family first");
+    expect(res2.candidates[0]!.supportingEvidence[0]!.evidenceText).toBe("Family first");
+  });
 });

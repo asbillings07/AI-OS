@@ -151,10 +151,10 @@ describe("Natural-language onboarding baseline (#70)", () => {
           proposals: [
             {
               subject: "family_time",
-              claim: "Spending quality time with children",
+              claim: "Spending quality time together",
               category: "priorities",
               temporalScope: "current",
-              evidenceText: "time together",
+              evidenceText: "quality time together",
               confidence: 0.9,
             },
           ],
@@ -203,7 +203,7 @@ describe("Natural-language onboarding baseline (#70)", () => {
       await engine.confirmBelief({ sessionId, beliefId: b2.beliefId, now: NOW });
       const { summary } = await engine.establishBaseline({ sessionId, now: NOW });
 
-      expect(summary).toContain("Spending quality time with children is a current working priority.");
+      expect(summary).toContain("Spending quality time together is a current working priority.");
     } finally {
       store.close();
     }

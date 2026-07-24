@@ -471,6 +471,154 @@ describe("Candidate Belief Extraction from Natural Language (#71)", () => {
     expect(result.candidates).toHaveLength(0);
   });
 
+  it("Contract Check 4: Reject sensitive trait hallucination when evidence lacks sensitive keywords", async () => {
+    const ai = createMockAi(async () => ({
+      candidates: [
+        {
+          subject: "health",
+          claim: "I have cancer",
+          category: "values",
+          temporalScope: "durable",
+          evidenceText: "I",
+          supportingEvidence: [
+            {
+              statementEnvelopeId: "evt_stmt_sensitive_hallucination",
+              evidenceText: "I",
+            },
+          ],
+          confidence: 0.9,
+        },
+      ],
+    }));
+
+    const extractor = new LlmBeliefExtractor({ ai });
+    const request: ExtractionRequest = {
+      currentQuestion: "How are you feeling?",
+      currentStatement: "I like mornings.",
+      currentStatementEnvelopeId: "evt_stmt_sensitive_hallucination",
+      priorTurns: [],
+      eligibleCategories: ALL_CATEGORIES,
+    };
+
+    const result = await extractor.extractCandidates(request);
+    expect(result.candidates).toHaveLength(1);
+
+    // Now verify the DeterministicPolicyGate rejects this hallucinated sensitive claim
+    const gate = new DeterministicPolicyGate({ allowedCategories: ALL_CATEGORIES });
+    const validation = gate.validateCandidate(result.candidates[0]!, request);
+    expect(validation.valid).toBe(false);
+  });
+
+  it("Contract Check 5: Policy-denied statement records empty processed snapshot and permits baseline establishment", async () => {
+    const store = new SqliteEventStore(":memory:");
+    const bus = new InProcessEventBus();
+    const host = new ProjectionHost(onboardingProjection);
+    const runtime = new OrionRuntime({ bus, store, projections: [host as ProjectionHost<unknown>] });
+
+    const policyGate = new DeterministicPolicyGate({
+      allowedCategories: ALL_CATEGORIES,
+    });
+
+    const ai = createMockAi(async () => ({ candidates: [] }));
+    const extractor = new LlmBeliefExtractor({ ai });
+    const engine = new OnboardingEngine({
+      runtime,
+      extractor,
+      policyGate,
+      getProjectionState: () => host.state,
+    });
+
+    const { sessionId, questionId } = await engine.startSession({ sessionId: "sess_denied_1", now: NOW });
+
+    // Record a prohibited statement that policy denies prior to extraction
+    const { statementEnvelopeId, proposedBeliefs } = await engine.recordStatement({
+      sessionId,
+      questionId,
+      rawText: "This text contains explicit-pornography and is prohibited.",
+      now: NOW,
+    });
+
+    expect(proposedBeliefs).toHaveLength(0);
+
+    const session = host.state.sessions.get(sessionId)!;
+    const turn = session.turns.find((t) => t.questionId === questionId)!;
+
+    // Verify snapshot was persisted and turn is processed
+    expect(turn.statementEnvelopeId).toBe(statementEnvelopeId);
+    expect(turn.isStatementProcessed).toBe(true);
+    expect(turn.extractionSnapshot).toEqual([]);
+
+    // Baseline establishment succeeds because all statement turns are marked processed
+    await expect(engine.establishBaseline({ sessionId, now: NOW })).resolves.not.toThrow();
+    expect(host.state.sessions.get(sessionId)!.isBaselineEstablished).toBe(true);
+  });
+
+  it("Contract Check 6: Event log replay preserves provider/model metadata (modelName, inferenceMechanism, promptSchemaVersion)", async () => {
+    const store = new SqliteEventStore(":memory:");
+    const bus = new InProcessEventBus();
+    const host = new ProjectionHost(onboardingProjection);
+    const runtime = new OrionRuntime({ bus, store, projections: [host as ProjectionHost<unknown>] });
+
+    const policyGate = new DeterministicPolicyGate({
+      allowedCategories: new Set(["values"]),
+    });
+
+    const ai = createMockAi(
+      async (req) => ({
+        candidates: [
+          {
+            subject: "family",
+            claim: "Family is top priority",
+            category: "values",
+            temporalScope: "durable",
+            evidenceText: "Family is top priority",
+            supportingEvidence: [{ statementEnvelopeId: req.currentStatementEnvelopeId, evidenceText: "Family is top priority" }],
+            confidence: 0.95,
+          },
+        ],
+      }),
+      { providerName: "openai-provider", modelName: "gpt-4o" },
+    );
+
+    const extractor = new LlmBeliefExtractor({ ai });
+    const engine = new OnboardingEngine({
+      runtime,
+      extractor,
+      policyGate,
+      getProjectionState: () => host.state,
+    });
+
+    const { sessionId, questionId } = await engine.startSession({ sessionId: "sess_replay_meta", now: NOW });
+    await engine.recordStatement({
+      sessionId,
+      questionId,
+      rawText: "Family is top priority for me.",
+      now: NOW,
+    });
+
+    const originalSession = host.state.sessions.get(sessionId)!;
+    const originalTurn = originalSession.turns.find((t) => t.questionId === questionId)!;
+    expect(originalTurn.modelName).toBe("gpt-4o");
+    expect(originalTurn.inferenceMechanism).toBe("openai-provider:gpt-4o");
+    expect(originalTurn.promptSchemaVersion).toBe("v0.1");
+
+    // Replay events into a new ProjectionHost
+    const replayedHost = new ProjectionHost(onboardingProjection);
+    const events = store.readAll();
+    for (const envelope of events) {
+      replayedHost.handle(envelope);
+    }
+
+    const replayedSession = replayedHost.state.sessions.get(sessionId)!;
+    const replayedTurn = replayedSession.turns.find((t) => t.questionId === questionId)!;
+    expect(replayedTurn.modelName).toBe("gpt-4o");
+    expect(replayedTurn.inferenceMechanism).toBe("openai-provider:gpt-4o");
+    expect(replayedTurn.promptSchemaVersion).toBe("v0.1");
+
+    const replayedBelief = Array.from(replayedSession.beliefs.values())[0]!;
+    expect(replayedBelief.claim).toBe("Family is top priority");
+  });
+
   it("Acceptance Case: User correction of an earlier statement produces corrected belief candidate", async () => {
     const store = new SqliteEventStore(":memory:");
     const bus = new InProcessEventBus();
@@ -481,19 +629,36 @@ describe("Candidate Belief Extraction from Natural Language (#71)", () => {
       allowedCategories: new Set(["roles_and_relationships"]),
     });
 
-    const ai = createMockAi(async (req) => ({
-      candidates: [
-        {
-          subject: "role",
-          claim: "Frontend architect",
-          category: "roles_and_relationships",
-          temporalScope: "durable",
-          evidenceText: "frontend architect",
-          supportingEvidence: [{ statementEnvelopeId: req.currentStatementEnvelopeId, evidenceText: "frontend architect" }],
-          confidence: 0.9,
-        },
-      ],
-    }));
+    const ai = createMockAi(async (req) => {
+      if (req.priorTurns.length === 0) {
+        return {
+          candidates: [
+            {
+              subject: "role",
+              claim: "Frontend architect",
+              category: "roles_and_relationships",
+              temporalScope: "durable",
+              evidenceText: "frontend architect",
+              supportingEvidence: [{ statementEnvelopeId: req.currentStatementEnvelopeId, evidenceText: "frontend architect" }],
+              confidence: 0.9,
+            },
+          ],
+        };
+      }
+      return {
+        candidates: [
+          {
+            subject: "role",
+            claim: "Engineering manager",
+            category: "roles_and_relationships",
+            temporalScope: "durable",
+            evidenceText: "engineering manager",
+            supportingEvidence: [{ statementEnvelopeId: req.currentStatementEnvelopeId, evidenceText: "engineering manager" }],
+            confidence: 0.95,
+          },
+        ],
+      };
+    });
 
     const extractor = new LlmBeliefExtractor({ ai });
     const engine = new OnboardingEngine({
@@ -503,19 +668,42 @@ describe("Candidate Belief Extraction from Natural Language (#71)", () => {
       getProjectionState: () => host.state,
     });
 
-    const { sessionId, questionId } = await engine.startSession({ sessionId: "sess_corr_1", now: NOW });
-    await engine.recordStatement({
+    const { sessionId, questionId: q1 } = await engine.startSession({ sessionId: "sess_corr_1", now: NOW });
+    const res1 = await engine.recordStatement({
       sessionId,
-      questionId,
+      questionId: q1,
       rawText: "I work as a frontend architect.",
       now: NOW,
     });
 
+    expect(res1.proposedBeliefs).toHaveLength(1);
+    expect(res1.proposedBeliefs[0]!.claim).toBe("Frontend architect");
+
+    // Turn 2: Follow up with correction
+    const { questionId: q2 } = await engine.askFollowUp({
+      sessionId,
+      questionText: "Any updates to your role?",
+      now: NOW,
+    });
+
+    const res2 = await engine.recordStatement({
+      sessionId,
+      questionId: q2,
+      rawText: "Correction: I am an engineering manager, not a frontend architect.",
+      now: NOW,
+    });
+
+    expect(res2.proposedBeliefs).toHaveLength(1);
+    expect(res2.proposedBeliefs[0]!.claim).toBe("Engineering manager");
+    expect(res2.proposedBeliefs[0]!.sourceEventIds).toEqual([res2.statementEnvelopeId]);
+
     const state = host.state;
     const session = state.sessions.get(sessionId)!;
-    expect(session.beliefs.size).toBe(1);
-    const belief = Array.from(session.beliefs.values())[0]!;
-    expect(belief.claim).toBe("Frontend architect");
+    // Both beliefs remain recorded as unconfirmed proposals for user review
+    expect(session.beliefs.size).toBe(2);
+    const beliefs = Array.from(session.beliefs.values());
+    expect(beliefs.map((b) => b.claim)).toEqual(["Frontend architect", "Engineering manager"]);
+    expect(beliefs.every((b) => b.verification === "unconfirmed" && b.status === "proposed")).toBe(true);
   });
 
   it("Acceptance Case: Conflicting candidate proposals in a turn are recorded as proposals without mutating baseline", async () => {

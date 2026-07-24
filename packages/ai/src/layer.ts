@@ -93,8 +93,20 @@ export class AiLayer implements AiCapabilities {
     const start = Date.now();
     try {
       const result = await this.#provider.extractBeliefs(request);
+      const modelName = result.modelName ?? this.#provider.modelName;
+      const inferenceMechanism =
+        result.inferenceMechanism && result.inferenceMechanism !== "unknown"
+          ? result.inferenceMechanism
+          : `${this.#provider.name}${modelName ? ":" + modelName : ""}`;
+
+      const validated: ExtractBeliefsResult = {
+        candidates: Array.isArray(result.candidates) ? result.candidates : [],
+        inferenceMechanism,
+        promptSchemaVersion: result.promptSchemaVersion ?? "v0.1",
+        modelName,
+      };
       this.#record("extract_beliefs", start, true, true, 0.8);
-      return result;
+      return validated;
     } catch (error) {
       this.#record("extract_beliefs", start, false, true);
       throw error;

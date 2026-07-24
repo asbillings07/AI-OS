@@ -155,15 +155,27 @@ export interface AiCacheOptions {
 }
 
 /**
- * Shallow clone. Cached results (`SummarizeResult`/`ClassifyResult`) are flat
- * value objects, so this is sufficient: every caller — a hit, a coalesced
- * joiner, and the original delegator alike — gets its own object, so one
- * caller mutating its returned value can never corrupt the shared cache entry
- * or another caller's copy.
+ * Deep clone and freeze. Every caller — a hit, a coalesced joiner, and the
+ * original delegator alike — gets its own deep copy, so one caller mutating a
+ * nested returned value (e.g. `ExtractBeliefsResult.candidates`) can never
+ * corrupt the shared cache entry or another caller's copy.
  */
+function deepFreeze<T extends object>(obj: T): T {
+  Object.freeze(obj);
+  for (const key of Object.getOwnPropertyNames(obj)) {
+    const val = (obj as any)[key];
+    if (val !== null && typeof val === "object" && !Object.isFrozen(val)) {
+      deepFreeze(val);
+    }
+  }
+  return obj;
+}
+
 function cloneResult<T extends object>(result: T): T {
-  if (Array.isArray(result)) return [...result] as unknown as T;
-  return { ...result };
+  if (typeof structuredClone === "function") {
+    return structuredClone(result);
+  }
+  return JSON.parse(JSON.stringify(result));
 }
 
 interface CacheEntry {
@@ -297,7 +309,7 @@ export function withCache(inner: AiCapabilities, options: AiCacheOptions = {}): 
       if (capability === "summarize" && !isValidSummary((result as unknown as SummarizeResult).summary)) {
         throw new AiError("summarize: summary is invalid");
       }
-      return Object.freeze(cloneResult(result)) as T;
+      return deepFreeze(cloneResult(result)) as T;
     });
     const entry: CacheEntry = {
       promise,

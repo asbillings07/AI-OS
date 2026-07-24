@@ -195,10 +195,17 @@ export class DeterministicPolicyGate {
       return { valid: false };
     }
 
-    const isSensitive =
-      SENSITIVE_TOPIC_PATTERN.test(candidate.claim) ||
+    const claimIsSensitive = SENSITIVE_TOPIC_PATTERN.test(candidate.claim);
+    const evidenceIsSensitive =
       SENSITIVE_TOPIC_PATTERN.test(candidate.evidenceText) ||
       targetStatementTexts.some((txt) => SENSITIVE_TOPIC_PATTERN.test(txt));
+
+    // Reject sensitive/protected concepts unless they occur in the independently verified source evidence/statement
+    if (claimIsSensitive && !evidenceIsSensitive) {
+      return { valid: false };
+    }
+
+    const isSensitive = claimIsSensitive || evidenceIsSensitive;
 
     // By default, onboarding proposals default to confirmation_required.
     // A proposal is assigned "allowed" only if its category is in allowedCategories AND non-sensitive.
@@ -373,6 +380,7 @@ export interface OnboardingTurnState {
   readonly policyVersion?: string;
   readonly inferenceMechanism?: string;
   readonly promptSchemaVersion?: string;
+  readonly modelName?: string;
 }
 
 export interface OnboardingSessionState {
@@ -492,6 +500,7 @@ function foldStatementProcessed(
     policyVersion,
     inferenceMechanism,
     promptSchemaVersion,
+    modelName,
   } = event.payload;
   const session = state.sessions.get(sessionId);
   if (!session) return state;
@@ -512,6 +521,7 @@ function foldStatementProcessed(
         policyVersion,
         inferenceMechanism,
         promptSchemaVersion,
+        modelName,
       };
     }
     return turn;
@@ -1119,6 +1129,9 @@ export class OnboardingEngine {
     if (!currentTurn.extractionSnapshot) {
       const validatedProposals: ValidatedCandidateProposal[] = [];
       const expectedBeliefIds: string[] = [];
+      let inferenceMechanism = "skipped";
+      let promptSchemaVersion = "v0.1";
+      let modelName: string | undefined = undefined;
 
       if (this.#policyGate.isExtractionAllowed(persistedRawText)) {
         const priorTurns: ExtractionTurn[] = sessionAfterStmt.turns
@@ -1141,8 +1154,9 @@ export class OnboardingEngine {
 
         const extractionRes = await this.#extractor.extractCandidates(extractionRequest);
         const rawCandidates = extractionRes.candidates;
-        const inferenceMechanism = extractionRes.metadata.inferenceMechanism;
-        const promptSchemaVersion = extractionRes.metadata.promptSchemaVersion;
+        inferenceMechanism = extractionRes.metadata.inferenceMechanism;
+        promptSchemaVersion = extractionRes.metadata.promptSchemaVersion;
+        modelName = extractionRes.metadata.modelName;
 
         for (let i = 0; i < rawCandidates.length; i++) {
           const candidate = rawCandidates[i]!;
@@ -1169,38 +1183,39 @@ export class OnboardingEngine {
 
           expectedBeliefIds.push(beliefId);
         }
-
-        await this.#runtime.recordExclusive(() => {
-          const s = this.#getProjectionState();
-          const sess = s.sessions.get(sessionId);
-          if (!sess || sess.status !== "active" || sess.isBaselineEstablished) return null;
-
-          const t = sess.turns.find((turn) => turn.questionId === questionId);
-          if (!t || t.statementEnvelopeId !== statementEnvelopeId) return null;
-
-          if (t.extractionSnapshot) return null;
-
-          const processedEvent = makeEvent({
-            id: `evt_stmt_proc_${statementId}`,
-            type: EventTypes.UserStatementProcessed,
-            source: "orion",
-            occurredAt,
-            payload: {
-              statementId,
-              statementEnvelopeId,
-              sessionId,
-              questionId,
-              extractionResult: validatedProposals,
-              proposedBeliefIds: expectedBeliefIds,
-              policyVersion: this.#policyGate.policyVersion,
-              inferenceMechanism,
-              promptSchemaVersion,
-              processedAt: occurredAt,
-            },
-          });
-          return processedEvent;
-        });
       }
+
+      await this.#runtime.recordExclusive(() => {
+        const s = this.#getProjectionState();
+        const sess = s.sessions.get(sessionId);
+        if (!sess || sess.status !== "active" || sess.isBaselineEstablished) return null;
+
+        const t = sess.turns.find((turn) => turn.questionId === questionId);
+        if (!t || t.statementEnvelopeId !== statementEnvelopeId) return null;
+
+        if (t.extractionSnapshot) return null;
+
+        const processedEvent = makeEvent({
+          id: `evt_stmt_proc_${statementId}`,
+          type: EventTypes.UserStatementProcessed,
+          source: "orion",
+          occurredAt,
+          payload: {
+            statementId,
+            statementEnvelopeId,
+            sessionId,
+            questionId,
+            extractionResult: validatedProposals,
+            proposedBeliefIds: expectedBeliefIds,
+            policyVersion: this.#policyGate.policyVersion,
+            inferenceMechanism,
+            promptSchemaVersion,
+            modelName,
+            processedAt: occurredAt,
+          },
+        });
+        return processedEvent;
+      });
     }
 
     // Step 5: Re-read state to get the durable extraction snapshot & expected belief IDs
@@ -1248,6 +1263,7 @@ export class OnboardingEngine {
             categoryPolicy: candidate.categoryPolicy,
             inferenceMechanism: turnWithSnapshot.inferenceMechanism ?? "deterministic",
             promptSchemaVersion: turnWithSnapshot.promptSchemaVersion ?? "v0.1",
+            modelName: turnWithSnapshot.modelName,
             validFrom: occurredAt,
             proposedAt: occurredAt,
           },
