@@ -54,7 +54,9 @@ Rather than conflating origin, derivation, verification, and state into a single
    - `superseded`: Replaced by a newer belief, higher-authority statement, or user correction.
    - `rejected`: Explicitly dismissed by the user.
    - `forgotten`: Soft-deleted / removed per user privacy request.
-   - *(Derived condition)* `expired`: Condition reached when an active or candidate belief's explicit temporal validity window (`expiresAt` / `validFrom`) has passed.
+   - *(Derived temporal conditions)*:
+     - `not_yet_effective`: Derived condition when a belief's start time is in the future (`now < validFrom`).
+     - `expired`: Derived condition when an explicit expiration window has passed (`expiresAt` exists and `now >= expiresAt`). Both `not_yet_effective` and `expired` conditions render a belief temporally ineligible for behavioral influence until applicable.
 
 #### Deterministic Authority Precedence
 
@@ -111,11 +113,11 @@ User control over understanding must be explicit, granular, and inspectable (#59
 #### Privacy & Side-Effect Authorization Constraints
 
 - **Side-Effect Constraint**: No belief—confirmed or unconfirmed—authorizes consequential external action by itself. Deterministic policy decides whether and how beliefs may influence behavior, and every side effect remains governed by ADR-0004.
-- **Deterministic Category Policies**: Orion enforces four deterministic category policies for belief processing:
+- **Deterministic Category Policies**: Orion enforces four deterministic category policies that act as a processing gate for belief extraction and application:
   - **`allowed`**: Extraction and inference are permitted automatically. Inferred candidate beliefs may enter `candidate` or `active` states according to authority and confidence policy, cautiously influencing reversible ranking or presentation.
   - **`confirmation_required`**: Candidates may be extracted and presented to the user for explicit confirmation (Tier 2 ask-only), but cannot become active or influence ranking, presentation, or recommendations prior to explicit user confirmation.
-  - **`opt_in`**: Category extraction and learning are disabled by default. Requires explicit user opt-in before candidate extraction or processing occurs. Once opted in by the user, extracted candidates follow `confirmation_required` or `allowed` as configured for that category.
-  - **`prohibited`**: Extraction and inference in this category are completely blocked by system policy. Any extracted proposal in a prohibited category is dropped immediately and never stored or projected.
+  - **`opt_in`**: Category extraction and learning are disabled by default (no collection, inference, or candidate belief exists while opt-in is not granted). Once the user explicitly grants opt-in, extracted candidates follow the category's configured `allowed` or `confirmation_required` policy.
+  - **`prohibited`**: Extraction and inference in this category are completely blocked by system policy. No belief payload is stored or projected. If auditability is required, system control logs retain strictly sanitized policy-control metadata that excludes the prohibited claim and evidence.
 - **Sensitive Categories**: Health, financial, political, or non-work personal categories default to `prohibited` or `opt_in` / `confirmation_required`, and must **never** default to `allowed`.
 - **v0.1 Core Belief Categories (#68)**: Orion structures user understanding into six primary categories:
   - `values`: Core personal and professional principles and convictions.
@@ -130,15 +132,16 @@ User control over understanding must be explicit, granular, and inspectable (#59
 
 ### 6. Actionability Decision Matrix
 
-Active beliefs guide Orion according to five constrained actionability tiers based on belief lifecycle state, category policy, and eligibility:
+Active beliefs guide Orion according to constrained actionability tiers based on category policy gate, belief lifecycle state, and temporal eligibility:
 
-| Belief State & Condition | Category Policy Check | Permitted Influence |
+| Category Policy Gate | Belief Lifecycle State & Temporal Condition | Permitted Influence |
 | --- | --- | --- |
-| **Declared or confirmed `active`** (unexpired) | `allowed` | Reversible ranking, presentation, and uncertain suggestions as policy permits. |
-| **`candidate` or `active` (Eligible unconfirmed, unexpired)** | `allowed` | Ask for confirmation; cautious reversible influence only when explicitly allowed by category policy. |
-| **`candidate` or `active` (unexpired)** | `confirmation_required` or `opt_in` | Ask for explicit confirmation only; no ranking or presentation influence before confirmation. |
-| **`candidate` or `active`** | `prohibited` | Ineligible for operational ranking, presentation, suggestions, or confirmation check-ins. Retained control metadata is used strictly for category enforcement, auditability, and preventing replay reactivation. |
-| **Ineligible lifecycle state or condition** (`contradicted`, `superseded`, `rejected`, `forgotten`, or `expired`) | Any | Ineligible for operational ranking, presentation, suggestions, or confirmation check-ins. Retained control metadata is used strictly for auditability, lineage, and preventing replay reactivation. |
+| **`allowed`** | **Declared or confirmed `active`** (`validFrom <= now < expiresAt`) | Reversible ranking, presentation, and uncertain suggestions as policy permits. |
+| **`allowed`** | **`candidate` or `active` (Eligible unconfirmed)** (`validFrom <= now < expiresAt`) | Ask for confirmation; cautious reversible influence only when explicitly allowed by policy. |
+| **`confirmation_required`** (or **`opt_in`** with confirmation) | **`candidate` or `active`** (`validFrom <= now < expiresAt`) | Ask for explicit confirmation only; no ranking or presentation influence before confirmation. |
+| **`opt_in`** (not granted) | No belief exists | Ineligible. No collection, candidate extraction, or processing occurs. |
+| **`prohibited`** | No belief stored or projected | Ineligible. Extraction is blocked by system policy; sanitized control metadata excludes claim and evidence. |
+| Any | **Ineligible lifecycle state or temporal condition** (`contradicted`, `superseded`, `rejected`, `forgotten`, `not_yet_effective`, or `expired`) | Ineligible for operational ranking, presentation, suggestions, or confirmation check-ins. Retained control metadata is used strictly for auditability, lineage, and preventing replay reactivation. |
 
 > **Universal Side-Effect Rule:** Consequential external side effects (e.g. sending messages, deleting data, applying external mutations) remain governed universally by ADR-0004—even declared or confirmed beliefs cannot authorize external actions by themselves.
 
