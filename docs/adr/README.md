@@ -62,6 +62,7 @@ These establish *how Orion is built*. Each records a **durable, vendor-agnostic 
 | [0013](./0013-gmail-authorization-and-credential-storage.md) | Gmail Authorization and Credential Storage (server-side OAuth, encrypted refresh token, read-time sync) | Accepted |
 | [0014](./0014-personal-importance-from-dispositions.md) | Personal Importance Learned from Attention Dispositions (source-neutral, rebuildable behavioral ranking signal) | Accepted |
 | [0015](./0015-cache-advisory-ai-outputs.md) | Cache Advisory AI Outputs by Content, Not by Revision (disposable, content-addressed, coalesced) | Accepted |
+| [0016](./0016-user-understanding-as-evidence-backed-evolving-beliefs.md) | Model User Understanding as Evidence-Backed, Evolving Beliefs (specialized projection over canonical event log) | Accepted |
 
 (Note: some GitHub issue titles use provisional labels like "ADR-002: Event Bus." Those labels predate this numbering scheme; the canonical ids are assigned here when the ADR is written — e.g. issue #21 became ADR-0008.)
 
@@ -89,9 +90,12 @@ How the accepted decisions build on one another — philosophy at the top, techn
    └───────────────┬──────────────────────────┘               │
                    ▼                                            │
              0010 Skill architecture  ◀── 0004, 0005           │
-                   │                                            │
-                   ▼                                            │
-             0011 AI abstraction layer ◀── 0004, 0005, and the attention objective (0006)
+                  │                                            │
+                  ▼                                            │
+            0011 AI abstraction layer ◀── 0004, 0005, and the attention objective (0006)
+                  │
+                  ▼
+            0016 User Understanding ◀── 0002, 0004, 0005, 0009 (constrains 0014)
 ```
 
 Read top-down for onboarding: the philosophy ADRs (0001–0006) fix *how Orion thinks*; the technology ADRs (0007–0011) fix *how it is built*, each a consequence of the philosophy above it.
