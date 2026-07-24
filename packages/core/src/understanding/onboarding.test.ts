@@ -676,25 +676,88 @@ describe("Natural-language onboarding baseline (#70)", () => {
     }
   });
 
-  it("Narrows evidence provenance sourceEventIds strictly to matching turn envelope ID", () => {
-    const request: ExtractionRequest = {
-      currentQuestion: "Question 2",
-      currentStatement: "I am focused on my career.",
-      currentStatementEnvelopeId: "evt_stmt_turn2",
-      priorTurns: [
-        {
-          question: "Question 1",
-          statement: "My family is my top priority.",
-          statementEnvelopeId: "evt_stmt_turn1",
+  it("Durable extraction snapshot: failure between proposals reuses persisted extraction snapshot on retry", async () => {
+    const store = new SqliteEventStore(":memory:");
+    try {
+      const bus = new InProcessEventBus();
+      const host = new ProjectionHost(onboardingProjection);
+      const runtime = new OrionRuntime({
+        bus,
+        store,
+        projections: [host as ProjectionHost<unknown>],
+      });
+
+      let extractCallCount = 0;
+      const nondeterministicExtractor: BeliefExtractor = {
+        async extractCandidates(request: ExtractionRequest) {
+          extractCallCount++;
+          if (extractCallCount === 1) {
+            return [
+              {
+                subject: "health",
+                claim: "Daily workout",
+                category: "routines",
+                temporalScope: "current",
+                evidenceText: "working out daily",
+                confidence: 0.8,
+              },
+            ];
+          }
+          // Nondeterministic second call produces different candidate!
+          return [
+            {
+              subject: "diet",
+              claim: "Eating healthy diet",
+              category: "routines",
+              temporalScope: "current",
+              evidenceText: "working out daily",
+              confidence: 0.8,
+            },
+          ];
         },
-      ],
-      eligibleCategories: new Set(["goals", "values"]),
-    };
+      };
 
-    const careerSourceIds = determineSourceEventIds("career", request);
-    expect(careerSourceIds).toEqual(["evt_stmt_turn2"]);
+      const engine = new OnboardingEngine({
+        runtime,
+        extractor: nondeterministicExtractor,
+        getProjectionState: () => host.state,
+      });
 
-    const familySourceIds = determineSourceEventIds("family", request);
-    expect(familySourceIds).toEqual(["evt_stmt_turn1"]);
+      const { sessionId, questionId } = await engine.startSession({
+        sessionId: "sess_snap_1",
+        now: NOW,
+      });
+
+      const res = await engine.recordStatement({
+        sessionId,
+        questionId,
+        rawText: "I am working out daily.",
+        now: NOW,
+      });
+
+      expect(extractCallCount).toBe(1);
+      expect(res.proposedBeliefs).toHaveLength(1);
+      expect(res.proposedBeliefs[0]!.subject).toBe("health");
+
+      // Verify that extraction snapshot is stored on turn
+      const sessionState = host.state.sessions.get(sessionId)!;
+      const turn = sessionState.turns.find((t) => t.questionId === questionId)!;
+      expect(turn.isStatementProcessed).toBe(true);
+      expect(turn.extractionSnapshot).toBeDefined();
+      expect(turn.extractionSnapshot![0]!.subject).toBe("health");
+
+      // Retry recordStatement does NOT call extractor again; it returns persisted proposals
+      const retryRes = await engine.recordStatement({
+        sessionId,
+        questionId,
+        rawText: "I am working out daily.",
+        now: NOW,
+      });
+
+      expect(extractCallCount).toBe(1); // Extractor was NOT rerun!
+      expect(retryRes.proposedBeliefs[0]!.subject).toBe("health");
+    } finally {
+      store.close();
+    }
   });
 });

@@ -312,6 +312,19 @@ export type BeliefCategory =
 
 export type BeliefTemporalScope = "durable" | "current" | "bounded" | "unknown";
 
+export interface CandidateBeliefProposal {
+  readonly subject: string;
+  readonly claim: string;
+  readonly category: BeliefCategory;
+  readonly temporalScope: BeliefTemporalScope;
+  readonly evidenceText: string;
+  readonly supportingEvidence?: readonly {
+    readonly statementEnvelopeId: string;
+    readonly evidenceText: string;
+  }[];
+  readonly confidence: number;
+}
+
 export interface UserOnboardingStartedPayload {
   readonly sessionId: string;
   readonly startedAt: string;
@@ -340,6 +353,7 @@ export interface UserStatementProcessedPayload {
   readonly statementEnvelopeId: string;
   readonly sessionId: string;
   readonly questionId: string;
+  readonly extractionResult: readonly CandidateBeliefProposal[];
   readonly proposedBeliefIds: readonly string[];
   readonly processedAt: string;
 }
@@ -358,7 +372,7 @@ export interface UserBeliefProposedPayload {
   readonly verification: "unconfirmed";
   readonly sourceEventIds: readonly string[];
   readonly confidence: number;
-  readonly categoryPolicy: "allowed" | "confirmation_required" | "opt_in";
+  readonly categoryPolicy: "allowed" | "confirmation_required";
   readonly inferenceMechanism: string;
   readonly promptSchemaVersion: string;
   readonly validFrom: string;
@@ -381,7 +395,7 @@ export interface UserBeliefCorrectedPayload {
   readonly correctedSubject: string;
   readonly correctedCategory: BeliefCategory;
   readonly correctedTemporalScope: BeliefTemporalScope;
-  readonly categoryPolicy: "allowed" | "confirmation_required" | "opt_in";
+  readonly categoryPolicy: "allowed" | "confirmation_required";
   readonly correctedAt: string;
 }
 

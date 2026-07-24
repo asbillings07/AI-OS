@@ -44,7 +44,7 @@ async function main(): Promise<void> {
         proposals: [
           {
             subject: "family",
-            claim: "Family well-being is top value",
+            claim: "Family well-being",
             category: "values",
             temporalScope: "durable",
             evidenceText: "family",
