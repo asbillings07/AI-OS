@@ -1065,6 +1065,8 @@ describe("Candidate Belief Extraction from Natural Language (#71)", () => {
       { claim: "I have cancer", evidence: "I know my professor has cancer", expectedValid: false },
       { claim: "I have cancer", evidence: "I think you have cancer", expectedValid: false },
       { claim: "I have diabetes", evidence: "I have cancer", expectedValid: false },
+      { claim: "I have cancer", evidence: "I study cancer biology", expectedValid: false },
+      { claim: "I do not have cancer", evidence: "I do not smoke and I have cancer", expectedValid: false },
     ];
 
     for (const [idx, tc] of testCases.entries()) {

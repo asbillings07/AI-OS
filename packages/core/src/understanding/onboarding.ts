@@ -106,12 +106,33 @@ function normalizeSensitiveConcept(word: string): string {
   return w;
 }
 
-function parseClaimSensitiveAssertions(claimText: string): SensitiveAssertion[] | null {
+function parseClauseSensitiveAssertions(
+  clauseText: string,
+  isClaimText: boolean = false,
+): SensitiveAssertion[] | null {
   const sensitiveMatches = Array.from(
-    claimText.matchAll(new RegExp(SENSITIVE_TOPIC_PATTERN.source, "gi")),
+    clauseText.matchAll(new RegExp(SENSITIVE_TOPIC_PATTERN.source, "gi")),
   );
   if (sensitiveMatches.length === 0) {
     return [];
+  }
+
+  // Fail closed if clause contains third parties, attitude verbs, or possessives
+  if (THIRD_PARTY_REF_PATTERN.test(clauseText) || ATTITUDE_VERB_PATTERN.test(clauseText) || /'s\b/i.test(clauseText)) {
+    return null;
+  }
+
+  const properNameMatches = Array.from(clauseText.matchAll(/\b([A-Z][a-z0-9_]+)\b/g));
+  for (const match of properNameMatches) {
+    const word = match[1]!;
+    if (
+      !FIRST_PERSON_PRONOUN_PATTERN.test(word) &&
+      !/^(This|That|It|The|A|An|In|On|At|For|With|To|And|But|Or|Family|Health|Career|Protecting|Has|Have|Protecting)$/i.test(
+        word,
+      )
+    ) {
+      return null;
+    }
   }
 
   const assertions: SensitiveAssertion[] = [];
@@ -120,92 +141,34 @@ function parseClaimSensitiveAssertions(claimText: string): SensitiveAssertion[] 
     const rawConcept = match[0]!.toLowerCase();
     const concept = normalizeSensitiveConcept(rawConcept);
 
-    const thirdPartyMatches = Array.from(
-      claimText.matchAll(new RegExp(THIRD_PARTY_REF_PATTERN.source, "gi")),
-    );
-    for (const tpMatch of thirdPartyMatches) {
-      const word = tpMatch[0]!;
-      const wordNorm = normalizeSensitiveConcept(word);
-      if (wordNorm !== concept) {
-        return null;
-      }
-    }
+    // Extract sub-segment starting at first-person pronoun ending around concept
+    const fpMatch = clauseText.match(/\b(I|me|myself|mine|my|our|we)\b/i);
 
-    if (ATTITUDE_VERB_PATTERN.test(claimText) || /'s\b/i.test(claimText)) {
+    // Claims synthesized by extractors (e.g., "Family focus", "Has two children") might omit explicit first-person pronouns
+    if (!fpMatch && !isClaimText) {
       return null;
     }
 
-    const polarity: "affirmed" | "negated" = NEGATION_PATTERN.test(claimText)
-      ? "negated"
-      : "affirmed";
+    const sensIdx = match.index ?? 0;
+    const fpIdx = fpMatch ? fpMatch.index ?? 0 : 0;
+
+    const subSegment = clauseText.slice(Math.min(fpIdx, sensIdx), Math.max(fpIdx, sensIdx) + rawConcept.length);
+
+    // Verify local negation scope specifically for this concept sub-segment
+    // If the full clause contains conjunctions ("and", "but") before the concept, check negation in the concept sub-clause only
+    const subClauseStart = Math.max(0, clauseText.lastIndexOf("and ", sensIdx), clauseText.lastIndexOf("but ", sensIdx));
+    const conceptSubClause = subClauseStart > fpIdx ? clauseText.slice(subClauseStart, sensIdx + rawConcept.length) : subSegment;
+    const isLocalNegated = NEGATION_PATTERN.test(conceptSubClause);
+
+    // Ensure non-sensitive activity/study verbs do not match diagnosis/identity (e.g. "I study cancer")
+    if (/\b(study|research|work\s+on|teach|read\s+about|learned\s+about)\b/i.test(subSegment)) {
+      return null;
+    }
 
     assertions.push({
       subject: "self",
       concept,
-      polarity,
-    });
-  }
-
-  return assertions;
-}
-
-function parseEvidenceSensitiveAssertions(clause: string): SensitiveAssertion[] | null {
-  const sensitiveMatches = Array.from(
-    clause.matchAll(new RegExp(SENSITIVE_TOPIC_PATTERN.source, "gi")),
-  );
-  if (sensitiveMatches.length === 0) {
-    return [];
-  }
-
-  if (!FIRST_PERSON_PRONOUN_PATTERN.test(clause)) {
-    return null;
-  }
-
-  if (ATTITUDE_VERB_PATTERN.test(clause) || /'s\b/i.test(clause)) {
-    return null;
-  }
-
-  const assertions: SensitiveAssertion[] = [];
-
-  for (const match of sensitiveMatches) {
-    const rawConcept = match[0]!.toLowerCase();
-    const concept = normalizeSensitiveConcept(rawConcept);
-
-    const thirdPartyMatches = Array.from(
-      clause.matchAll(new RegExp(THIRD_PARTY_REF_PATTERN.source, "gi")),
-    );
-    for (const tpMatch of thirdPartyMatches) {
-      const word = tpMatch[0]!;
-      const wordNorm = normalizeSensitiveConcept(word);
-      if (wordNorm !== concept) {
-        return null;
-      }
-    }
-
-    const properNameMatches = Array.from(clause.matchAll(/\b([A-Z][a-z0-9_]+)\b/g));
-    for (const match of properNameMatches) {
-      const word = match[1]!;
-      if (
-        !FIRST_PERSON_PRONOUN_PATTERN.test(word) &&
-        !/^(This|That|It|The|A|An|In|On|At|For|With|To|And|But|Or|Family|Health|Career|Protecting)$/i.test(
-          word,
-        )
-      ) {
-        const wordNorm = normalizeSensitiveConcept(word);
-        if (wordNorm !== concept) {
-          return null;
-        }
-      }
-    }
-
-    const polarity: "affirmed" | "negated" = NEGATION_PATTERN.test(clause)
-      ? "negated"
-      : "affirmed";
-
-    assertions.push({
-      subject: "self",
-      concept,
-      polarity,
+      polarity: isLocalNegated ? "negated" : "affirmed",
     });
   }
 
@@ -343,7 +306,7 @@ export class DeterministicPolicyGate {
     }
 
     // Parse sensitive assertions for candidate.claim independently
-    const claimAssertions = parseClaimSensitiveAssertions(candidate.claim);
+    const claimAssertions = parseClauseSensitiveAssertions(candidate.claim, true);
     if (claimAssertions === null) {
       return { valid: false };
     }
@@ -374,7 +337,7 @@ export class DeterministicPolicyGate {
     // Parse evidence assertions independently for each verified clause
     const evidenceAssertions: SensitiveAssertion[] = [];
     for (const clause of verifiedEvidenceClauses) {
-      const parsed = parseEvidenceSensitiveAssertions(clause);
+      const parsed = parseClauseSensitiveAssertions(clause);
       if (parsed) {
         evidenceAssertions.push(...parsed);
       }
