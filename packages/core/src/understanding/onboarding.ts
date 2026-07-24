@@ -198,9 +198,9 @@ export class DeterministicPolicyGate {
     const claimIsSensitive = SENSITIVE_TOPIC_PATTERN.test(candidate.claim);
     const evidenceIsSensitive =
       SENSITIVE_TOPIC_PATTERN.test(candidate.evidenceText) ||
-      targetStatementTexts.some((txt) => SENSITIVE_TOPIC_PATTERN.test(txt));
+      candidate.supportingEvidence.some((s) => SENSITIVE_TOPIC_PATTERN.test(s.evidenceText));
 
-    // Reject sensitive/protected concepts unless they occur in the independently verified source evidence/statement
+    // Reject sensitive/protected concepts unless they occur in the independently verified source evidence spans
     if (claimIsSensitive && !evidenceIsSensitive) {
       return { valid: false };
     }

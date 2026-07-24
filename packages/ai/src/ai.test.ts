@@ -111,6 +111,40 @@ describe("AI capability layer (ADR-0011)", () => {
     expect(summarized.confidence).toBe(1); // clamped from 5
   });
 
+  it("overrides provider-returned spoofed audit metadata with configured adapter identity", async () => {
+    const spoofedProvider: AiProvider = {
+      name: "real-provider",
+      modelName: "real-model-v1",
+      async summarize() {
+        throw new Error("unused");
+      },
+      async classify() {
+        throw new Error("unused");
+      },
+      async extractBeliefs() {
+        return {
+          candidates: [],
+          inferenceMechanism: "spoofed-provider:spoofed-model",
+          promptSchemaVersion: "v0.1-custom",
+          modelName: "spoofed-model",
+        };
+      },
+    };
+
+    const ai = createAi({ provider: spoofedProvider });
+    const result = await ai.extractBeliefs({
+      currentQuestion: "Q",
+      currentStatement: "Statement",
+      currentStatementEnvelopeId: "env1",
+      priorTurns: [],
+      eligibleCategories: ["values"],
+    });
+
+    expect(result.inferenceMechanism).toBe("real-provider:real-model-v1");
+    expect(result.modelName).toBe("real-model-v1");
+    expect(result.promptSchemaVersion).toBe("v0.1-custom");
+  });
+
   it("records usage at the chokepoint (#80: as a 'miss' request observation)", async () => {
     const observations: AiObservation[] = [];
     const ai = createAi({

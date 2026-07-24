@@ -471,8 +471,8 @@ describe("Candidate Belief Extraction from Natural Language (#71)", () => {
     expect(result.candidates).toHaveLength(0);
   });
 
-  it("Contract Check 4: Reject sensitive trait hallucination when evidence lacks sensitive keywords", async () => {
-    const ai = createMockAi(async () => ({
+  it("Contract Check 4: Reject sensitive trait claims when evidence spans lack sensitive keywords (including mixed statements)", async () => {
+    const ai = createMockAi(async (req) => ({
       candidates: [
         {
           subject: "health",
@@ -482,7 +482,7 @@ describe("Candidate Belief Extraction from Natural Language (#71)", () => {
           evidenceText: "I",
           supportingEvidence: [
             {
-              statementEnvelopeId: "evt_stmt_sensitive_hallucination",
+              statementEnvelopeId: req.currentStatementEnvelopeId,
               evidenceText: "I",
             },
           ],
@@ -492,21 +492,31 @@ describe("Candidate Belief Extraction from Natural Language (#71)", () => {
     }));
 
     const extractor = new LlmBeliefExtractor({ ai });
-    const request: ExtractionRequest = {
+    const gate = new DeterministicPolicyGate({ allowedCategories: ALL_CATEGORIES });
+
+    // Case A: Pure non-sensitive statement
+    const requestPure: ExtractionRequest = {
       currentQuestion: "How are you feeling?",
       currentStatement: "I like mornings.",
-      currentStatementEnvelopeId: "evt_stmt_sensitive_hallucination",
+      currentStatementEnvelopeId: "evt_stmt_pure",
       priorTurns: [],
       eligibleCategories: ALL_CATEGORIES,
     };
+    const resultPure = await extractor.extractCandidates(requestPure);
+    expect(resultPure.candidates).toHaveLength(1);
+    expect(gate.validateCandidate(resultPure.candidates[0]!, requestPure).valid).toBe(false);
 
-    const result = await extractor.extractCandidates(request);
-    expect(result.candidates).toHaveLength(1);
-
-    // Now verify the DeterministicPolicyGate rejects this hallucinated sensitive claim
-    const gate = new DeterministicPolicyGate({ allowedCategories: ALL_CATEGORIES });
-    const validation = gate.validateCandidate(result.candidates[0]!, request);
-    expect(validation.valid).toBe(false);
+    // Case B: Mixed statement containing 'cancer' elsewhere, but candidate evidence span is only 'I'
+    const requestMixed: ExtractionRequest = {
+      currentQuestion: "How are you feeling?",
+      currentStatement: "My friend has cancer; I like mornings.",
+      currentStatementEnvelopeId: "evt_stmt_mixed",
+      priorTurns: [],
+      eligibleCategories: ALL_CATEGORIES,
+    };
+    const resultMixed = await extractor.extractCandidates(requestMixed);
+    expect(resultMixed.candidates).toHaveLength(1);
+    expect(gate.validateCandidate(resultMixed.candidates[0]!, requestMixed).valid).toBe(false);
   });
 
   it("Contract Check 5: Policy-denied statement records empty processed snapshot and permits baseline establishment", async () => {
