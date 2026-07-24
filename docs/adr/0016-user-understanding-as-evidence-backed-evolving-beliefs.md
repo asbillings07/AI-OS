@@ -1,6 +1,6 @@
 # ADR-0016: Model User Understanding as Evidence-Backed, Evolving Beliefs
 
-> Status: Accepted
+> Status: Proposed
 > Date: 2026-07-24 · Deciders: @asbillings07
 > Related: #68 (Model user understanding), #31 (Memory), #53 (Context baseline), #57 (Learned preferences), #59 (Inspectable context), #65 (Personal importance), #70 (Natural language onboarding), #71 (Belief extraction), #72 (Evolving projection), #79 (Dogfood validation), [ADR-0002](0002-everything-is-an-event.md), [ADR-0004](0004-ai-recommends-rules-decide.md), [ADR-0005](0005-context-is-a-first-class-domain-object.md), [ADR-0009](0009-storage-strategy.md), [ADR-0014](0014-personal-importance-from-dispositions.md)
 
@@ -34,7 +34,7 @@ Orion maintains strict boundaries between related domain concepts:
 | **Belief** | A correctable hypothesis about the user supported by evidence and held with uncertainty (e.g. goals, roles, active projects, contextual priorities). An inferred preference remains a **Belief** until the user explicitly adopts it as a **Preference**. | Evolving Hypothesis |
 | **User Understanding** | The capability that maintains, projects, and exposes active beliefs derived from evidence. | Specialized Projection |
 | **Evidence** | Referenceable Events or facts that support or contradict a belief. | Provenance Reference (`sourceEventIds`) |
-| **Confidence** | The strength of evidentiary support for a belief within its authority level. Confidence is neither truth, authority, nor permission to act. | Proposal Metadata |
+| **Confidence** | The strength of evidentiary support for a belief within its authority level. Confidence is neither truth, authority, nor permission to act. | Non-authoritative derived metadata |
 
 > **Deterministic Confidence Constraint:** AI-reported confidence is proposal metadata. Deterministic policy may normalize, cap, or disregard it; a model cannot increase a proposal's authority by assigning itself high confidence.
 
@@ -52,27 +52,25 @@ Rather than conflating origin, derivation, verification, and state into a single
 When active beliefs conflict or overlap, Orion resolves authority using a strict deterministic hierarchy:
 
 ```text
-Explicit correction / rejection
-> current declared statement
-> confirmed inference
-> unconfirmed inference
-> observed behavioral pattern
+current user-declared belief, including a correction
+> user-confirmed inferred belief
+> policy-eligible unconfirmed inferred belief
 ```
 
-Conflicts within the same authority level are resolved by scope specificity and effective timestamp (`validFrom`), **never** by selecting whichever item carries a higher AI confidence score.
+A rejection acts as a veto over the rejected claim and its existing evidence path rather than an active belief tier. An observed behavioral pattern is evidence, not an active belief tier. Conflicts within the same authority level are resolved by scope specificity and effective timestamp (`validFrom`), **never** by selecting whichever item carries a higher AI confidence score.
 
 ### 3. Temporal & Contradiction Semantics
 
 Beliefs are not permanent facts; they evolve over time as reality changes. Every active belief tracks `validFrom`, `lastSupportedAt`, and optional `reviewAfter` or `expiresAt`.
 
-Supporting evidence updates `lastSupportedAt` and reinforces confidence within its authority level. Contradictory evidence creates a candidate conflict or transitions the belief to `contradicted`, triggering user review or automatic supersession under deterministic policy.
+Support and contradiction judgments are recorded as domain events (e.g. `UserBeliefSupported`, `UserBeliefContradicted`), capturing the supporting/contradicting event IDs and the rule or model version involved. Replay folds these recorded judgments deterministically rather than re-evaluating historical evidence with newer inference logic.
 
 #### Category-Specific Decay & Expiration Rules
 
-- **Current-priority beliefs** (e.g. "Focusing on Q3 launch this week"): Expire quickly unless renewed by fresh evidence or user statements.
-- **Inferred routines and behavioral patterns** (e.g. "Usually reviews PRs in the morning"): Weaken gradually without reinforcement and yield to direct schedule/context signals.
-- **Explicit preferences** (e.g. "Do not disturb outside 9am-5pm"): Remain authoritative until changed, deleted, or their declared validity window ends.
-- **Values and core-relationship beliefs** (e.g. "Primary manager is Dana", "Key obligation is client delivery"): Do not decay merely with elapsed time. Contradictory evidence may trigger review, but replacement requires appropriate confirmation or direct correction.
+- **Current-priority beliefs:** Expire quickly unless renewed by fresh evidence or user statements.
+- **Inferred routines and behavioral patterns:** Weaken gradually without reinforcement and yield to direct schedule/context signals.
+- **Explicit preferences:** Remain authoritative until changed, deleted, or their declared validity ends.
+- **Values and core-relationship beliefs:** Do not decay merely with elapsed time. Contradictory evidence may trigger review, but replacement requires appropriate confirmation or direct correction. Operational relationships (e.g. "Primary manager is Dana") may update automatically from authoritative source data without requiring personal confirmation.
 
 ### 4. Deterministic Replay Across AI Inference
 
@@ -104,20 +102,23 @@ User control over understanding must be explicit, granular, and inspectable (#59
 #### Privacy & Side-Effect Authorization Constraints
 
 - **Side-Effect Constraint**: No belief—confirmed or unconfirmed—authorizes consequential external action by itself. Deterministic policy decides whether and how beliefs may influence behavior, and every side effect remains governed by ADR-0004.
-- **Sensitive Categories**: Health, financial, personal political, or non-work sensitive categories are prohibited from automatic inference and require explicit confirmation or opt-in.
-- **Minimization**: Orion retains only the minimum evidence required for provenance and explainability. No cross-user learning or data pooling is permitted.
+- **Category Policies**: Orion enforces four deterministic category policies for belief processing: `allowed`, `confirmation_required`, `opt_in`, and `prohibited`. Candidates in `confirmation_required` categories may be presented to the user for explicit confirmation, but cannot influence ranking, presentation, or recommendations prior to confirmation.
+- **User Control**: Users may inspect, correct, reject, or forget any belief, and may disable both collection and learning by category (#59).
+- **Minimization**: Orion retains only the minimum evidence required for provenance and explainability. User-derived beliefs and evidence must never influence another user's understanding.
 - **Negative Evidence**: Absence of evidence is never treated as negative preference evidence.
 
 ### 6. Actionability Decision Matrix
 
-Active beliefs guide Orion according to four constrained actionability tiers:
+Active beliefs guide Orion according to four constrained actionability tiers based on belief eligibility:
 
-| Tier | Constraint | Allowed Use Cases |
-| --- | --- | --- |
-| **Tier 1: Influence Reversible Ranking / Presentation** | May cautiously adjust advisory priority scores or summary emphasis. | Re-ordering Work Items, framing reason text, highlighting relevant context. |
-| **Tier 2: Proactively Ask for Confirmation** | May surface candidate beliefs to the user for explicit confirmation. | Onboarding check-ins (#70), surfacing detected goal shifts, confirming inferred project roles. |
-| **Tier 3: Suggest While Expressing Uncertainty** | May offer non-binding suggestions or draft responses framed with explicit uncertainty. | Recommending a snooze duration, suggesting a draft reply outline. |
-| **Tier 4: Must Not Use** | Prohibited from automated execution or unconfirmed policy enforcement. | Performing external actions, deleting data, sending messages, setting hard suppression rules without user command. |
+| Belief State | Permitted Influence |
+| --- | --- |
+| **Declared or confirmed active** | Reversible ranking, presentation, and uncertain suggestions as policy permits. |
+| **Eligible unconfirmed** | Ask for confirmation; cautious reversible influence only when explicitly allowed by policy. |
+| **Sensitive and confirmation-required** | Ask only; no ranking or presentation influence before confirmation. |
+| **Rejected, forgotten, expired, or prohibited** | Must not use for any purpose. |
+
+> **Universal Side-Effect Rule:** Consequential external side effects (e.g. sending messages, deleting data, applying external mutations) remain governed universally by ADR-0004—even declared or confirmed beliefs cannot authorize external actions by themselves.
 
 ### 7. Worked Examples
 
@@ -139,10 +140,10 @@ Active beliefs guide Orion according to four constrained actionability tiers:
    - Email A: *"Contract draft — please review terms by Friday."* (Explicit action request)
    - Email B: *"FYI — quick update on team staffing."* (Informational update)
 2. **Evaluation**:
-   - Originator history contributes a bounded positive contribution (+0.075 priority).
-   - Item A carries `ExplicitRequest` (+0.25 urgency/responsibility boost) and aligns with active goal *"Finalize partner contract"*. Priority = `0.73` (**Needs Attention**).
-   - Item B carries no action signal (`LikelyLowValue` / FYI). Priority = `0.32` (**Can Wait**).
-3. **Outcome**: Personal Importance provides bounded background signal, but item intent and active user beliefs determine final prioritization. Orion does not form a global, simplistic judgment that "everything from Sam is important."
+   - Originator history contributes a bounded positive background contribution.
+   - Email A carries an `ExplicitRequest` signal and aligns with active goal *"Finalize partner contract"*, reaching **Needs Attention**.
+   - Email B carries no action signal (`LikelyLowValue` / FYI) and remains in **Can Wait**.
+3. **Outcome**: Personal Importance provides a bounded background signal, but item intent and active user beliefs determine final prioritization. Orion does not form a global, simplistic judgment that "everything from Sam is important." *(Note: numeric priority scores such as `0.73` vs `0.32` are non-normative implementation outputs from the current dogfood build.)*
 
 ## In one sentence
 
@@ -156,14 +157,14 @@ Active beliefs guide Orion according to four constrained actionability tiers:
 
 ## Principles
 
-- **Supports:**
-  - **#1 (Human judgment remains authoritative):** Direct user corrections immediately supersede inferences.
-  - **#3 (Explainability and traceable reasoning):** Every active belief links to supporting evidence IDs.
+- **Supports (Primary):**
+  - **#1 (Human judgment remains authoritative):** Direct user corrections and rejections outrank inferences.
+  - **#3 (Explainability and traceable reasoning):** Every active belief links directly to supporting evidence IDs.
   - **#4 (Deterministic enforcement):** Belief projections fold events deterministically; AI proposes, rules decide.
-  - **#5 (Events remain the source of truth):** Beliefs are rebuildable projections over the event log.
-  - **#7 (Honest, testable confidence):** Confidence is proposal metadata and never grants authority or permission to act.
-  - **#11 (The system ages gracefully):** Temporal decay and supersession ensure stale beliefs expire naturally.
-  - **#13 (Privacy and minimization):** Sensitive categories require confirmation; no cross-user learning; user can inspect and forget beliefs.
+  - **#5 (Events remain the source of truth):** Beliefs are rebuildable projections over the canonical event log.
+  - **#7 (Honest, testable confidence):** Confidence is non-authoritative derived metadata; a model cannot self-assign authority.
+  - **#11 (The system ages gracefully):** Temporal decay, expiration, and supersession ensure stale beliefs expire naturally.
+  - **#13 (Privacy and minimization):** Category privacy policies, user control, evidence minimization, and strict cross-user isolation.
 - **Cites:** #6 (Attention is primary), #8 (Source-neutral domain), #12 (Prefer reversible decisions), #14 (Isolate side effects).
 - **Trade-offs:** Accepts the overhead of explicit event schemas and proposal/confirmation loops over quick, unconstrained LLM prompt injections to guarantee rebuildability, safety, and user trust.
 
@@ -173,4 +174,4 @@ Active beliefs guide Orion according to four constrained actionability tiers:
 - **Treating every belief as Memory:** Rejected — conflates distilled historical facts ("User worked at Acme in 2024") with evolving, uncertain hypotheses ("User is currently focused on Q3 launch").
 - **Treating beliefs as Preferences:** Rejected — Preferences are explicit, authoritative operational policies (e.g. working hours). Inferred beliefs are hypotheses held with uncertainty and lower authority.
 - **Prompt-only personalization:** Rejected — passing uncurated conversation history or raw text into LLM prompts creates nondeterministic ranking drift, eliminates inspectability, and cannot be corrected cleanly by the user.
-- **Independent User Understanding database / bounded context:** Rejected — isolates user understanding from the core event log, creating synchronization gaps and preventing deterministic replay.
+- **Independent mutable profile store outside the canonical Event Log:** Rejected — isolates user understanding from the event log, creating synchronization gaps and preventing deterministic replay (note: User Understanding can exist as a distinct bounded context, but its state must remain a rebuildable projection over canonical events).
