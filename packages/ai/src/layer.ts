@@ -1,5 +1,6 @@
 import {
   AiError,
+  isValidSummary,
   type AiCapabilities,
   type AiProvider,
   type AiUsage,
@@ -41,9 +42,9 @@ export class AiLayer implements AiCapabilities {
       // empty-label check below), so `providerInvoked` is always true.
       const result = await this.#provider.summarize(request);
       const summary = typeof result.summary === "string" ? result.summary.trim() : "";
-      if (summary.length === 0) {
-        // Whitespace-only is as useless as empty — reject it, don't record success.
-        throw new AiError("summarize: provider returned an empty summary");
+      if (!isValidSummary(summary)) {
+        // Whitespace-only or literal "undefined"/"null" is invalid — reject it.
+        throw new AiError("summarize: provider returned an empty or invalid summary");
       }
       const validated: SummarizeResult = {
         summary,

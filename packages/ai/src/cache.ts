@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
-import type {
-  AiCapabilities,
-  AiUsage,
-  ClassifyRequest,
-  ClassifyResult,
-  SummarizeRequest,
-  SummarizeResult,
+import {
+  isValidSummary,
+  type AiCapabilities,
+  type AiUsage,
+  type ClassifyRequest,
+  type ClassifyResult,
+  type SummarizeRequest,
+  type SummarizeResult,
 } from "./capabilities.js";
 
 /**
