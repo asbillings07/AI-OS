@@ -10,7 +10,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@orion/ai": "workspace:*",
+    "@orion/ai": "*",
     "better-sqlite3": "^11.0.0"
   },
   "devDependencies": {
