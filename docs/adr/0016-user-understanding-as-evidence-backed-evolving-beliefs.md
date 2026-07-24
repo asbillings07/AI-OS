@@ -1,6 +1,6 @@
 # ADR-0016: Model User Understanding as Evidence-Backed, Evolving Beliefs
 
-> Status: Proposed
+> Status: Accepted
 > Date: 2026-07-24 · Deciders: @asbillings07
 > Related: #68 (Model user understanding), #31 (Memory), #53 (Context baseline), #57 (Learned preferences), #59 (Inspectable context), #65 (Personal importance), #70 (Natural language onboarding), #71 (Belief extraction), #72 (Evolving projection), #79 (Dogfood validation), [ADR-0002](0002-everything-is-an-event.md), [ADR-0004](0004-ai-recommends-rules-decide.md), [ADR-0005](0005-context-is-a-first-class-domain-object.md), [ADR-0009](0009-storage-strategy.md), [ADR-0014](0014-personal-importance-from-dispositions.md)
 
@@ -33,10 +33,12 @@ Orion maintains strict boundaries between related domain concepts:
 | **Preference** | An explicit, authoritative operational policy declared by the user (e.g. working hours, snooze defaults, notification channels). | Authoritative Rule |
 | **Belief** | A correctable hypothesis about the user supported by evidence and held with uncertainty (e.g. goals, roles, active projects, contextual priorities). An inferred preference remains a **Belief** until the user explicitly adopts it as a **Preference**. | Evolving Hypothesis |
 | **User Understanding** | The capability that maintains, projects, and exposes active beliefs derived from evidence. | Specialized Projection |
-| **Evidence** | Referenceable Events or facts that support or contradict a belief. | Provenance Reference (`sourceEventIds`) |
+| **Evidence** | Referenceable Events or immutable state snapshots that support or contradict a belief. Must resolve to an immutable, replay-stable reference (`sourceEventIds`). | Provenance Reference (`sourceEventIds`) |
 | **Confidence** | The strength of evidentiary support for a belief within its authority level. Confidence is neither truth, authority, nor permission to act. | Non-authoritative derived metadata |
 
 > **Deterministic Confidence Constraint:** AI-reported confidence is proposal metadata. Deterministic policy may normalize, cap, or disregard it; a model cannot increase a proposal's authority by assigning itself high confidence.
+
+> **Replay-Stable Evidence Invariant:** Every evidence item must resolve to an immutable or replay-stable reference (e.g. canonical Event ID, immutable snapshot ID, or deterministic content hash). External state (e.g. source data from an integration) must be captured as a canonical Event or immutable snapshot on the log before serving as evidence for a belief.
 
 ### 2. Orthogonal Metadata Dimensions
 
@@ -45,7 +47,14 @@ Rather than conflating origin, derivation, verification, and state into a single
 1. **Evidence Origin**: `user_statement` (direct input), `user_behavior` (dispositions/actions), `source_data` (integrations), `system_observation` (environmental context).
 2. **Derivation**: `declared_directly` (stated by user), `deterministic_inference` (derived by rules), `ai_assisted_inference` (extracted by LLM).
 3. **Verification**: `unconfirmed` (proposed/inferred hypothesis), `user_confirmed` (verified by user).
-4. **Lifecycle**: `candidate` (proposed), `active` (currently applied), `contradicted` (challenged by new evidence), `superseded` (replaced by newer belief), `rejected` (explicitly dismissed by user), `forgotten` (removed per user privacy request).
+4. **Lifecycle**:
+   - `candidate`: Proposed hypothesis awaiting verification or category policy check.
+   - `active`: Currently valid and actively applied belief.
+   - `contradicted`: Challenged by conflicting evidence, pending resolution or supersession.
+   - `superseded`: Replaced by a newer belief, higher-authority statement, or user correction.
+   - `rejected`: Explicitly dismissed by the user.
+   - `forgotten`: Soft-deleted / removed per user privacy request.
+   - *(Derived condition)* `expired`: Condition reached when an active or candidate belief's explicit temporal validity window (`expiresAt` / `validFrom`) has passed.
 
 #### Deterministic Authority Precedence
 
@@ -102,21 +111,34 @@ User control over understanding must be explicit, granular, and inspectable (#59
 #### Privacy & Side-Effect Authorization Constraints
 
 - **Side-Effect Constraint**: No belief—confirmed or unconfirmed—authorizes consequential external action by itself. Deterministic policy decides whether and how beliefs may influence behavior, and every side effect remains governed by ADR-0004.
-- **Category Policies**: Orion enforces four deterministic category policies for belief processing: `allowed`, `confirmation_required`, `opt_in`, and `prohibited`. Candidates in `confirmation_required` categories may be presented to the user for explicit confirmation, but cannot influence ranking, presentation, or recommendations prior to confirmation.
+- **Deterministic Category Policies**: Orion enforces four deterministic category policies for belief processing:
+  - **`allowed`**: Extraction and inference are permitted automatically. Inferred candidate beliefs may enter `candidate` or `active` states according to authority and confidence policy, cautiously influencing reversible ranking or presentation.
+  - **`confirmation_required`**: Candidates may be extracted and presented to the user for explicit confirmation (Tier 2 ask-only), but cannot become active or influence ranking, presentation, or recommendations prior to explicit user confirmation.
+  - **`opt_in`**: Category extraction and learning are disabled by default. Requires explicit user opt-in before candidate extraction or processing occurs. Once opted in by the user, extracted candidates follow `confirmation_required` or `allowed` as configured for that category.
+  - **`prohibited`**: Extraction and inference in this category are completely blocked by system policy. Any extracted proposal in a prohibited category is dropped immediately and never stored or projected.
+- **Sensitive Categories**: Health, financial, political, or non-work personal categories default to `prohibited` or `opt_in` / `confirmation_required`, and must **never** default to `allowed`.
+- **v0.1 Core Belief Categories (#68)**: Orion structures user understanding into six primary categories:
+  - `values`: Core personal and professional principles and convictions.
+  - `roles_and_relationships`: Professional roles, team structures, reporting lines, and organizational responsibilities.
+  - `goals`: Specific outcomes or objectives being actively pursued.
+  - `priorities`: Relative importance and focus allocations across active goals or topics.
+  - `constraints`: Hard operational boundaries (e.g. availability, working hours, travel limits).
+  - `routines`: Observed or stated behavioral patterns and schedules.
 - **User Control**: Users may inspect, correct, reject, or forget any belief, and may disable both collection and learning by category (#59).
 - **Minimization**: Orion retains only the minimum evidence required for provenance and explainability. User-derived beliefs and evidence must never influence another user's understanding.
 - **Negative Evidence**: Absence of evidence is never treated as negative preference evidence.
 
 ### 6. Actionability Decision Matrix
 
-Active beliefs guide Orion according to four constrained actionability tiers based on belief eligibility:
+Active beliefs guide Orion according to five constrained actionability tiers based on belief lifecycle state, category policy, and eligibility:
 
-| Belief State | Permitted Influence |
-| --- | --- |
-| **Declared or confirmed active** | Reversible ranking, presentation, and uncertain suggestions as policy permits. |
-| **Eligible unconfirmed** | Ask for confirmation; cautious reversible influence only when explicitly allowed by policy. |
-| **Sensitive and confirmation-required** | Ask only; no ranking or presentation influence before confirmation. |
-| **Rejected, forgotten, expired, or prohibited** | Must not use for any purpose. |
+| Belief State & Condition | Category Policy Check | Permitted Influence |
+| --- | --- | --- |
+| **Declared or confirmed `active`** (unexpired) | `allowed` | Reversible ranking, presentation, and uncertain suggestions as policy permits. |
+| **`candidate` or `active` (Eligible unconfirmed, unexpired)** | `allowed` | Ask for confirmation; cautious reversible influence only when explicitly allowed by category policy. |
+| **`candidate` or `active` (unexpired)** | `confirmation_required` or `opt_in` | Ask for explicit confirmation only; no ranking or presentation influence before confirmation. |
+| **`candidate` or `active`** | `prohibited` | Ineligible for operational ranking, presentation, suggestions, or confirmation check-ins. Retained control metadata is used strictly for category enforcement, auditability, and preventing replay reactivation. |
+| **Ineligible lifecycle state or condition** (`contradicted`, `superseded`, `rejected`, `forgotten`, or `expired`) | Any | Ineligible for operational ranking, presentation, suggestions, or confirmation check-ins. Retained control metadata is used strictly for auditability, lineage, and preventing replay reactivation. |
 
 > **Universal Side-Effect Rule:** Consequential external side effects (e.g. sending messages, deleting data, applying external mutations) remain governed universally by ADR-0004—even declared or confirmed beliefs cannot authorize external actions by themselves.
 
@@ -124,9 +146,9 @@ Active beliefs guide Orion according to four constrained actionability tiers bas
 
 #### Example 1: Strengthening & Confirmation
 1. **Observation**: Orion observes three consecutive PR reviews completed for `acme/orion` within 1 hour of request.
-2. **AI Proposal**: AI capability emits `UserBeliefProposed` with claim *"User prioritizes acme/orion PR reviews"*, origin `user_behavior`, derivation `ai_assisted_inference`, verification `unconfirmed`, lifecycle `candidate`.
-3. **Actionability**: Tier 2 — Orion surfaces a lightweight check-in: *"I noticed you usually handle acme/orion PRs right away. Should I treat these as high priority?"*
-4. **Confirmation**: User selects "Yes". System emits `UserBeliefConfirmed`. The projection transitions the belief to verification `user_confirmed` and lifecycle `active`.
+2. **AI Proposal**: AI capability emits `UserBeliefProposed` with claim *"User prioritizes acme/orion PR reviews"*, origin `user_behavior`, derivation `ai_assisted_inference`, verification `unconfirmed`, lifecycle `candidate`, category `priorities`.
+3. **Actionability**: Eligible unconfirmed candidate — Orion surfaces a lightweight check-in asking about the user's working belief: *"I noticed you usually handle acme/orion PRs right away. Is completing acme/orion PR reviews quickly one of your current working priorities?"*
+4. **Confirmation**: User selects "Yes". System emits `UserBeliefConfirmed`. The projection transitions the belief to verification `user_confirmed` and lifecycle `active`. *(If the user subsequently chooses to configure an operational execution policy, such as "Always route PR notifications to SMS," that operational rule is declared as an explicit **Preference** rather than a **Belief**.)*
 
 #### Example 2: Priority Shift & Supersession
 1. **State**: User has an active belief: *"Focusing on Q2 audit preparation"* (`validFrom: 2026-04-01`).

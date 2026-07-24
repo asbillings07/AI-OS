@@ -87,18 +87,19 @@ How the accepted decisions build on one another — philosophy at the top, techn
    ▼                                          │               │
 0009 Storage strategy                         │               │
    │                                          │               │
-   └───────────────┬──────────────────────────┘               │
-                   ▼                                            │
-             0010 Skill architecture  ◀── 0004, 0005           │
-                  │                                            │
-                  ▼                                            │
-            0011 AI abstraction layer ◀── 0004, 0005, and the attention objective (0006)
-                  │
-                  ▼
-            0016 User Understanding ◀── 0002, 0004, 0005, 0009 (constrains 0014)
+   ├───────────────┬──────────────────────────┘               │
+   │               ▼                                          │
+   │         0010 Skill architecture  ◀── 0004, 0005          │
+   │              │                                           │
+   │              ▼                                           │
+   │        0011 AI abstraction layer ◀── 0004, 0005, and 0006 │
+   │                                                          │
+   └─► 0016 User Understanding ◀── 0002, 0004, 0005, 0009     │
+            │                                                 │
+            └─(constrains)─► 0014 Personal Importance         │
 ```
 
-Read top-down for onboarding: the philosophy ADRs (0001–0006) fix *how Orion thinks*; the technology ADRs (0007–0011) fix *how it is built*, each a consequence of the philosophy above it.
+Read top-down for onboarding: the philosophy ADRs (0001–0006) fix *how Orion thinks*; the technology stances (0007–0016) fix *how it is built*, each a consequence of the philosophy above it.
 
 ## How to write an ADR
 
