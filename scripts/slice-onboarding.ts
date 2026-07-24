@@ -13,10 +13,10 @@
  */
 import {
   InProcessEventBus,
+  LlmBeliefExtractor,
   OnboardingEngine,
   OrionRuntime,
   ProjectionHost,
-  ScriptedBeliefExtractor,
   SqliteEventStore,
   onboardingProjection,
 } from "@orion/core";
@@ -25,7 +25,7 @@ const NOW = "2026-07-24T14:00:00.000Z";
 
 async function main(): Promise<void> {
   console.log("================================================================================");
-  console.log("ORION NATURAL-LANGUAGE ONBOARDING VERTICAL SLICE (#70)");
+  console.log("ORION NATURAL-LANGUAGE ONBOARDING VERTICAL SLICE (#70 / #71)");
   console.log("================================================================================\n");
 
   const store = new SqliteEventStore(":memory:");
@@ -38,37 +38,58 @@ async function main(): Promise<void> {
       projections: [host as ProjectionHost<unknown>],
     });
 
-    const extractor = new ScriptedBeliefExtractor([
-      {
-        pattern: /family|career|health/i,
-        proposals: [
-          {
-            subject: "family",
-            claim: "Family well-being",
-            category: "values",
-            temporalScope: "durable",
-            evidenceText: "family",
-            confidence: 0.95,
-          },
-          {
-            subject: "career",
-            claim: "Launching Orion AI-OS startup",
-            category: "goals",
-            temporalScope: "current",
-            evidenceText: "career",
-            confidence: 0.9,
-          },
-          {
-            subject: "health",
-            claim: "Protecting physical health and regular exercise",
-            category: "priorities",
-            temporalScope: "durable",
-            evidenceText: "health",
-            confidence: 0.85,
-          },
-        ],
+    // Provider-neutral LlmBeliefExtractor with structured LLM completion
+    const extractor = new LlmBeliefExtractor({
+      completion: async (options) => {
+        // Simulates structured LLM interpretation of the natural-language user statement
+        return JSON.stringify({
+          candidates: [
+            {
+              subject: "family",
+              claim: "Family well-being",
+              category: "values",
+              temporalScope: "durable",
+              evidenceText: "family",
+              supportingEvidence: [
+                {
+                  statementEnvelopeId: "evt_stmt_stmt_session_demo_1_q_session_demo_1_1",
+                  evidenceText: "family",
+                },
+              ],
+              confidence: 0.95,
+            },
+            {
+              subject: "career",
+              claim: "Launching Orion AI-OS startup",
+              category: "goals",
+              temporalScope: "current",
+              evidenceText: "career",
+              supportingEvidence: [
+                {
+                  statementEnvelopeId: "evt_stmt_stmt_session_demo_1_q_session_demo_1_1",
+                  evidenceText: "career",
+                },
+              ],
+              confidence: 0.9,
+            },
+            {
+              subject: "health",
+              claim: "Protecting physical health and regular exercise",
+              category: "priorities",
+              temporalScope: "durable",
+              evidenceText: "health",
+              supportingEvidence: [
+                {
+                  statementEnvelopeId: "evt_stmt_stmt_session_demo_1_q_session_demo_1_1",
+                  evidenceText: "health",
+                },
+              ],
+              confidence: 0.85,
+            },
+          ],
+        });
       },
-    ]);
+    });
 
     const engine = new OnboardingEngine({
       runtime,

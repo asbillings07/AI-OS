@@ -27,7 +27,8 @@ It turns the raw event stream into meaning. Its documents, in reading order:
 - [Memory](./memory.md) (#31) — the permanent: durable knowledge, distinct from transient Context.
 - [Capacity](./capacity.md) (#10) — an *input*: how effectively the user can act right now.
 - [Opportunity Detection](./opportunity-detection.md) (#26) — what is *derived*: situations worth acting on.
-- [Prioritization Engine](./prioritization-engine.md) (#29) — combining Opportunity, Capacity, Commitment, and Urgency into a ranked, explainable list.
+- [Prioritization Engine](./prioritization-engine.md) (#29) — combining Opportunity, Capacity, Commitment, Urgency, and Personal Context into a ranked, explainable list.
+- [Candidate Belief Extraction](./candidate-belief-extraction.md) (#71) — provider-neutral natural-language candidate belief extraction boundary with verbatim evidence grounding.
 - [Context Query API](./context-query-api.md) (#30) — the semantic contract: ask for meaning, not data.
 
 ## Other expected documents (to be established)
