@@ -414,10 +414,14 @@ describe("Natural-language onboarding baseline (#70)", () => {
       // No proposals created
       expect(proposedBeliefs).toHaveLength(0);
 
-      // Now with granted consent
+      // Establish baseline on s1 so it is completed
+      await engine.establishBaseline({ sessionId: "sess_opt_test_1", now: NOW });
+
+      // Now with granted consent & allowedCategories
       const consentedGate = new DeterministicPolicyGate({
         optInCategories: new Set(["routines"]),
         grantedConsentCategories: new Set(["routines"]),
+        allowedCategories: new Set(["routines"]),
       });
 
       const consentedEngine = new OnboardingEngine({
@@ -852,7 +856,7 @@ describe("Natural-language onboarding baseline (#70)", () => {
       const turn = sessionState.turns.find((t) => t.questionId === questionId)!;
       expect(turn.extractionSnapshot).toHaveLength(1);
       expect(turn.extractionSnapshot![0]!.subject).toBe("career");
-      expect(turn.extractionSnapshot![0]!.categoryPolicy).toBe("allowed");
+      expect(turn.extractionSnapshot![0]!.categoryPolicy).toBe("confirmation_required");
       expect(turn.policyVersion).toBe("v0.1");
     } finally {
       store.close();
@@ -1108,5 +1112,101 @@ describe("Natural-language onboarding baseline (#70)", () => {
 
     expect(cleaned).toBe("Family well-being");
     expect(duration).toBeLessThan(50);
+  });
+
+  it("Issue 1 Fix: Onboarding proposals default to confirmation_required and personal topics are never allowed", () => {
+    const defaultGate = new DeterministicPolicyGate();
+    const request: ExtractionRequest = {
+      currentQuestion: "Tell me about yourself",
+      currentStatement: "I have two children, my spouse has cancer, and I work in software.",
+      currentStatementEnvelopeId: "evt_stmt_200",
+      priorTurns: [],
+      eligibleCategories: defaultGate.getEligibleCategories(),
+    };
+
+    // A. Personal claim (family/children/health) in default gate -> confirmation_required
+    const familyCandidate = {
+      subject: "family",
+      claim: "Has two children and spouse with cancer",
+      category: "roles_and_relationships" as const,
+      temporalScope: "durable" as const,
+      evidenceText: "two children",
+      supportingEvidence: [{ statementEnvelopeId: "evt_stmt_200", evidenceText: "two children" }],
+      confidence: 0.9,
+    };
+    const famRes = defaultGate.validateCandidate(familyCandidate, request);
+    expect(famRes.valid).toBe(true);
+    expect(famRes.categoryPolicy).toBe("confirmation_required");
+
+    // B. Work claim in default gate -> confirmation_required (because allowedCategories is not set)
+    const workCandidate = {
+      subject: "career",
+      claim: "Works in software development",
+      category: "roles_and_relationships" as const,
+      temporalScope: "durable" as const,
+      evidenceText: "software",
+      supportingEvidence: [{ statementEnvelopeId: "evt_stmt_200", evidenceText: "software" }],
+      confidence: 0.9,
+    };
+    const workRes = defaultGate.validateCandidate(workCandidate, request);
+    expect(workRes.valid).toBe(true);
+    expect(workRes.categoryPolicy).toBe("confirmation_required");
+
+    // C. Gate with allowedCategories set to roles_and_relationships:
+    const configuredGate = new DeterministicPolicyGate({
+      allowedCategories: new Set(["roles_and_relationships"]),
+    });
+    const workRequest: ExtractionRequest = {
+      currentQuestion: "Tell me about your job",
+      currentStatement: "I work in software development.",
+      currentStatementEnvelopeId: "evt_stmt_201",
+      priorTurns: [],
+      eligibleCategories: configuredGate.getEligibleCategories(),
+    };
+    const workCandidateInWorkReq = {
+      ...workCandidate,
+      supportingEvidence: [{ statementEnvelopeId: "evt_stmt_201", evidenceText: "software" }],
+    };
+    // Non-sensitive work claim in allowed category -> allowed
+    expect(configuredGate.validateCandidate(workCandidateInWorkReq, workRequest).categoryPolicy).toBe("allowed");
+    // Sensitive personal claim even in allowed category -> confirmation_required
+    expect(configuredGate.validateCandidate(familyCandidate, request).categoryPolicy).toBe("confirmation_required");
+  });
+
+  it("Issue 2 Fix: Concurrent startSession calls enforce single active session invariant", async () => {
+    const store = new SqliteEventStore(":memory:");
+    try {
+      const bus = new InProcessEventBus();
+      const host = new ProjectionHost(onboardingProjection);
+      const runtime = new OrionRuntime({
+        bus,
+        store,
+        projections: [host as ProjectionHost<unknown>],
+      });
+
+      const engine = new OnboardingEngine({
+        runtime,
+        extractor: new ScriptedBeliefExtractor(),
+        getProjectionState: () => host.state,
+      });
+
+      // Call startSession concurrently without explicit session IDs
+      const [res1, res2] = await Promise.all([
+        engine.startSession({ now: NOW }),
+        engine.startSession({ now: NOW }),
+      ]);
+
+      // Both concurrent calls return the EXACT same active session ID and question ID
+      expect(res1.sessionId).toBe(res2.sessionId);
+      expect(res1.questionId).toBe(res2.questionId);
+
+      // Projection state has strictly 1 active session
+      expect(host.state.sessions.size).toBe(1);
+      const activeSession = host.state.sessions.get(res1.sessionId)!;
+      expect(activeSession.status).toBe("active");
+      expect(activeSession.turns).toHaveLength(1);
+    } finally {
+      store.close();
+    }
   });
 });

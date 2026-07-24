@@ -52,7 +52,7 @@ export interface BeliefExtractor {
 // ============================================================================
 
 const SENSITIVE_TOPIC_PATTERN =
-  /\b(health|medical|doctor|illness|diagnosis|treatment|medication|therapy|financial|income|salary|debt|mortgage|bank|tax|political|election|vote|party|religion|church|faith)\b/i;
+  /\b(health|medical|doctor|illness|diagnosis|treatment|medication|cancer|diabetes|therapy|financial|income|salary|debt|mortgage|bank|tax|political|election|vote|party|religion|church|faith|family|children|child|kid|kids|spouse|partner|marriage|marital)\b/i;
 
 const PROHIBITED_PATTERN =
   /\b(illegal|unlawful|explicit-pornography|hate-speech)\b/i;
@@ -70,6 +70,7 @@ export interface PolicyGateOptions {
   readonly optInCategories?: ReadonlySet<BeliefCategory>;
   readonly grantedConsentCategories?: ReadonlySet<BeliefCategory>;
   readonly prohibitedCategories?: ReadonlySet<BeliefCategory>;
+  readonly allowedCategories?: ReadonlySet<BeliefCategory>;
 }
 
 export class DeterministicPolicyGate {
@@ -77,11 +78,13 @@ export class DeterministicPolicyGate {
   readonly #optInCategories: ReadonlySet<BeliefCategory>;
   readonly #grantedConsentCategories: ReadonlySet<BeliefCategory>;
   readonly #prohibitedCategories: ReadonlySet<BeliefCategory>;
+  readonly #allowedCategories: ReadonlySet<BeliefCategory>;
 
   constructor(options: PolicyGateOptions = {}) {
     this.#optInCategories = options.optInCategories ?? new Set();
     this.#grantedConsentCategories = options.grantedConsentCategories ?? new Set();
     this.#prohibitedCategories = options.prohibitedCategories ?? new Set();
+    this.#allowedCategories = options.allowedCategories ?? new Set();
   }
 
   /**
@@ -182,10 +185,13 @@ export class DeterministicPolicyGate {
       SENSITIVE_TOPIC_PATTERN.test(candidate.evidenceText) ||
       targetStatementTexts.some((txt) => SENSITIVE_TOPIC_PATTERN.test(txt));
 
-    // Effective post-consent policy is either confirmation_required or allowed
-    const categoryPolicy: "allowed" | "confirmation_required" = isSensitive
-      ? "confirmation_required"
-      : "allowed";
+    // By default, onboarding proposals default to confirmation_required.
+    // A proposal is assigned "allowed" only if its category is in allowedCategories AND non-sensitive.
+    const isExplicitlyAllowedCategory = this.#allowedCategories.has(candidate.category);
+    const categoryPolicy: "allowed" | "confirmation_required" =
+      isExplicitlyAllowedCategory && !isSensitive
+        ? "allowed"
+        : "confirmation_required";
 
     return {
       valid: true,
@@ -214,13 +220,15 @@ export class DeterministicPolicyGate {
       return { valid: false };
     }
 
+    const isExplicitlyAllowedCategory = this.#allowedCategories.has(correctedCategory);
     const isSensitive =
       SENSITIVE_TOPIC_PATTERN.test(correctedClaim) ||
       SENSITIVE_TOPIC_PATTERN.test(rawCorrectionText);
 
-    const categoryPolicy: "allowed" | "confirmation_required" = isSensitive
-      ? "confirmation_required"
-      : "allowed";
+    const categoryPolicy: "allowed" | "confirmation_required" =
+      isExplicitlyAllowedCategory && !isSensitive
+        ? "allowed"
+        : "confirmation_required";
 
     return {
       valid: true,
@@ -918,39 +926,54 @@ export class OnboardingEngine {
     readonly openingQuestionText?: string;
     readonly now?: string;
   } = {}): Promise<{ readonly sessionId: string; readonly questionId: string; readonly questionText: string }> {
-    const sessionId = options.sessionId ?? `session_${Date.now()}`;
     const questionText = options.openingQuestionText ?? "What is important to you?";
-    const questionId = `q_${sessionId}_1`;
     const occurredAt = options.now ?? new Date().toISOString();
 
-    const currentState = this.#getProjectionState();
-    const existingSession = currentState.sessions.get(sessionId);
-    if (existingSession && existingSession.turns.length > 0) {
-      const firstTurn = existingSession.turns[0]!;
-      return {
-        sessionId,
-        questionId: firstTurn.questionId,
-        questionText: firstTurn.questionText,
-      };
-    }
+    let targetSessionId = options.sessionId;
 
     await this.#runtime.recordExclusive(() => {
       const state = this.#getProjectionState();
-      if (state.sessions.has(sessionId)) return null;
+
+      // Enforce single active/paused session invariant: check for ANY existing active or paused session
+      const existingActiveOrPaused = Array.from(state.sessions.values()).find(
+        (s) => (s.status === "active" || s.status === "paused") && !s.isBaselineEstablished,
+      );
+
+      if (existingActiveOrPaused) {
+        targetSessionId = existingActiveOrPaused.sessionId;
+        return null; // Active or paused session already exists; reuse it
+      }
+
+      if (!targetSessionId) {
+        targetSessionId = `session_${Date.now()}`;
+      }
+
+      if (state.sessions.has(targetSessionId)) {
+        return null;
+      }
 
       const startedEvent = makeEvent({
-        id: `evt_start_${sessionId}`,
+        id: `evt_start_${targetSessionId}`,
         type: EventTypes.UserOnboardingStarted,
         source: "orion",
         occurredAt,
-        payload: { sessionId, startedAt: occurredAt },
+        payload: { sessionId: targetSessionId, startedAt: occurredAt },
       });
       return startedEvent;
     });
 
+    // Re-read projection state to get effective targetSessionId
+    const stateAfterStart = this.#getProjectionState();
+    const activeOrPaused = Array.from(stateAfterStart.sessions.values()).find(
+      (s) => (s.status === "active" || s.status === "paused") && !s.isBaselineEstablished,
+    );
+
+    const effectiveSessionId = activeOrPaused?.sessionId ?? targetSessionId!;
+    const questionId = `q_${effectiveSessionId}_1`;
+
     await this.#runtime.recordExclusive(() => {
       const state = this.#getProjectionState();
-      const session = state.sessions.get(sessionId);
+      const session = state.sessions.get(effectiveSessionId);
       if (!session || session.turns.some((t) => t.questionId === questionId)) return null;
 
       const askedEvent = makeEvent({
@@ -960,7 +983,7 @@ export class OnboardingEngine {
         occurredAt,
         payload: {
           questionId,
-          sessionId,
+          sessionId: effectiveSessionId,
           kind: "opening",
           text: questionText,
           ordinal: 1,
@@ -971,7 +994,15 @@ export class OnboardingEngine {
       return askedEvent;
     });
 
-    return { sessionId, questionId, questionText };
+    const finalState = this.#getProjectionState();
+    const finalSession = finalState.sessions.get(effectiveSessionId)!;
+    const firstTurn = finalSession.turns[0]!;
+
+    return {
+      sessionId: effectiveSessionId,
+      questionId: firstTurn.questionId,
+      questionText: firstTurn.questionText,
+    };
   }
 
   async recordStatement(options: {
