@@ -4,3 +4,4 @@ export * from "./signals.js";
 export * from "./work-signals.js";
 export * from "./work-opportunities.js";
 export * from "./timeline.js";
+export * from "./onboarding.js";

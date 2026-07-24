@@ -29,6 +29,32 @@ export const EventTypes = {
   OriginatorUnsuppressed: "OriginatorUnsuppressed",
   /** Orion's own Observation that a situation is worth acting on (Source: orion). */
   OpportunityDetected: "OpportunityDetected",
+  /** First-run natural-language onboarding session started (#70). */
+  UserOnboardingStarted: "UserOnboardingStarted",
+  /** Orion asked an onboarding question (opening or follow-up) (#70). */
+  UserOnboardingQuestionAsked: "UserOnboardingQuestionAsked",
+  /** User responded to an onboarding question with raw text (#70). */
+  UserStatementRecorded: "UserStatementRecorded",
+  /** Orion proposed a candidate belief from user understanding (#70, ADR-0016). */
+  UserBeliefProposed: "UserBeliefProposed",
+  /** User explicitly confirmed a proposed candidate belief (#70). */
+  UserBeliefConfirmed: "UserBeliefConfirmed",
+  /** User corrected a proposed belief, creating an immediate confirmed replacement (#70). */
+  UserBeliefCorrected: "UserBeliefCorrected",
+  /** User explicitly rejected a proposed belief (#70). */
+  UserBeliefRejected: "UserBeliefRejected",
+  /** User confirmed baseline summary, committing onboarding understanding (#70). */
+  UserUnderstandingBaselineEstablished: "UserUnderstandingBaselineEstablished",
+  /** User paused/skipped an incomplete onboarding session (#70). */
+  UserOnboardingSkipped: "UserOnboardingSkipped",
+  /** User resumed a previously skipped onboarding session (#70). */
+  UserOnboardingResumed: "UserOnboardingResumed",
+  /** User restarted onboarding, abandoning old session (#70). */
+  UserOnboardingRestarted: "UserOnboardingRestarted",
+  /** User reset conversational progress within session (#70). */
+  UserOnboardingReset: "UserOnboardingReset",
+  /** User deleted established onboarding baseline (#70). */
+  UserUnderstandingBaselineDeleted: "UserUnderstandingBaselineDeleted",
 } as const;
 
 export type EventType = (typeof EventTypes)[keyof typeof EventTypes];
@@ -272,6 +298,173 @@ export type OriginatorSuppressedEvent = EventEnvelope<
 export type OriginatorUnsuppressedEvent = EventEnvelope<
   "OriginatorUnsuppressed",
   OriginatorUnsuppressedPayload
+>;
+
+export type BeliefCategory =
+  | "values"
+  | "roles_and_relationships"
+  | "goals"
+  | "priorities"
+  | "constraints"
+  | "routines";
+
+export type BeliefTemporalScope = "durable" | "current" | "bounded" | "unknown";
+
+export interface UserOnboardingStartedPayload {
+  readonly sessionId: string;
+  readonly startedAt: string;
+}
+
+export interface UserOnboardingQuestionAskedPayload {
+  readonly questionId: string;
+  readonly sessionId: string;
+  readonly kind: "opening" | "follow_up";
+  readonly text: string;
+  readonly ordinal: number;
+  readonly mechanismVersion: string;
+  readonly askedAt: string;
+}
+
+export interface UserStatementRecordedPayload {
+  readonly statementId: string;
+  readonly sessionId: string;
+  readonly questionId: string;
+  readonly rawText: string;
+  readonly recordedAt: string;
+}
+
+export interface UserBeliefProposedPayload {
+  readonly beliefId: string;
+  readonly sessionId: string;
+  readonly statementEnvelopeId: string;
+  readonly subject: string;
+  readonly claim: string;
+  readonly category: BeliefCategory;
+  readonly temporalScope: BeliefTemporalScope;
+  readonly evidenceText: string;
+  readonly origin: "user_statement";
+  readonly derivation: "ai_assisted_inference";
+  readonly verification: "unconfirmed";
+  readonly sourceEventIds: readonly string[];
+  readonly confidence: number;
+  readonly categoryPolicy: "allowed" | "confirmation_required" | "opt_in";
+  readonly inferenceMechanism: string;
+  readonly promptSchemaVersion: string;
+  readonly validFrom: string;
+  readonly expiresAt?: string;
+  readonly proposedAt: string;
+}
+
+export interface UserBeliefConfirmedPayload {
+  readonly beliefId: string;
+  readonly sessionId: string;
+  readonly confirmedAt: string;
+}
+
+export interface UserBeliefCorrectedPayload {
+  readonly oldBeliefId: string;
+  readonly newBeliefId: string;
+  readonly sessionId: string;
+  readonly rawCorrectionText: string;
+  readonly correctedClaim: string;
+  readonly correctedSubject: string;
+  readonly correctedCategory: BeliefCategory;
+  readonly correctedTemporalScope: BeliefTemporalScope;
+  readonly correctedAt: string;
+}
+
+export interface UserBeliefRejectedPayload {
+  readonly beliefId: string;
+  readonly sessionId: string;
+  readonly reason?: string;
+  readonly rejectedAt: string;
+}
+
+export interface UserUnderstandingBaselineEstablishedPayload {
+  readonly sessionId: string;
+  readonly confirmedBeliefIds: readonly string[];
+  readonly summary: readonly string[];
+  readonly establishedAt: string;
+}
+
+export interface UserOnboardingSkippedPayload {
+  readonly sessionId: string;
+  readonly skippedAt: string;
+}
+
+export interface UserOnboardingResumedPayload {
+  readonly sessionId: string;
+  readonly resumedAt: string;
+}
+
+export interface UserOnboardingRestartedPayload {
+  readonly oldSessionId: string;
+  readonly newSessionId: string;
+  readonly restartedAt: string;
+}
+
+export interface UserOnboardingResetPayload {
+  readonly sessionId: string;
+  readonly resetAt: string;
+}
+
+export interface UserUnderstandingBaselineDeletedPayload {
+  readonly sessionId: string;
+  readonly reason?: string;
+  readonly deletedAt: string;
+}
+
+export type UserOnboardingStartedEvent = EventEnvelope<
+  "UserOnboardingStarted",
+  UserOnboardingStartedPayload
+>;
+export type UserOnboardingQuestionAskedEvent = EventEnvelope<
+  "UserOnboardingQuestionAsked",
+  UserOnboardingQuestionAskedPayload
+>;
+export type UserStatementRecordedEvent = EventEnvelope<
+  "UserStatementRecorded",
+  UserStatementRecordedPayload
+>;
+export type UserBeliefProposedEvent = EventEnvelope<
+  "UserBeliefProposed",
+  UserBeliefProposedPayload
+>;
+export type UserBeliefConfirmedEvent = EventEnvelope<
+  "UserBeliefConfirmed",
+  UserBeliefConfirmedPayload
+>;
+export type UserBeliefCorrectedEvent = EventEnvelope<
+  "UserBeliefCorrected",
+  UserBeliefCorrectedPayload
+>;
+export type UserBeliefRejectedEvent = EventEnvelope<
+  "UserBeliefRejected",
+  UserBeliefRejectedPayload
+>;
+export type UserUnderstandingBaselineEstablishedEvent = EventEnvelope<
+  "UserUnderstandingBaselineEstablished",
+  UserUnderstandingBaselineEstablishedPayload
+>;
+export type UserOnboardingSkippedEvent = EventEnvelope<
+  "UserOnboardingSkipped",
+  UserOnboardingSkippedPayload
+>;
+export type UserOnboardingResumedEvent = EventEnvelope<
+  "UserOnboardingResumed",
+  UserOnboardingResumedPayload
+>;
+export type UserOnboardingRestartedEvent = EventEnvelope<
+  "UserOnboardingRestarted",
+  UserOnboardingRestartedPayload
+>;
+export type UserOnboardingResetEvent = EventEnvelope<
+  "UserOnboardingReset",
+  UserOnboardingResetPayload
+>;
+export type UserUnderstandingBaselineDeletedEvent = EventEnvelope<
+  "UserUnderstandingBaselineDeleted",
+  UserUnderstandingBaselineDeletedPayload
 >;
 
 /** True for automated/no-reply senders — messages that rarely warrant a reply. */

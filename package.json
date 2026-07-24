@@ -13,6 +13,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "slice": "tsx scripts/run-slice.ts",
+    "slice:onboarding": "tsx scripts/slice-onboarding.ts",
     "bootstrap": "tsx scripts/bootstrap.ts",
     "db:reset": "tsx scripts/db-reset.ts",
     "db:rebuild": "tsx scripts/rebuild.ts",
