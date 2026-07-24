@@ -142,6 +142,9 @@ describe("withCache (#80)", () => {
       async classify() {
         throw new Error("unused");
       },
+      async extractBeliefs() {
+        throw new Error("unused");
+      },
     };
     const ai = withCache(inner);
     const first = await ai.summarize({ text: "hello" });
@@ -157,6 +160,9 @@ describe("withCache (#80)", () => {
         return { summary: request.text, confidence: 0.42 };
       },
       async classify() {
+        throw new Error("unused");
+      },
+      async extractBeliefs() {
         throw new Error("unused");
       },
     };
@@ -184,6 +190,9 @@ describe("withCache (#80)", () => {
       async classify() {
         throw new Error("unused");
       },
+      async extractBeliefs() {
+        throw new Error("unused");
+      },
     };
     const ai = withCache(inner);
     await expect(ai.summarize({ text: "hello" })).rejects.toThrow(/summary is invalid/);
@@ -202,6 +211,9 @@ describe("withCache (#80)", () => {
         return innerResult;
       },
       async classify() {
+        throw new Error("unused");
+      },
+      async extractBeliefs() {
         throw new Error("unused");
       },
     };
@@ -231,6 +243,9 @@ describe("withCache (#80)", () => {
       async classify() {
         throw new Error("unused");
       },
+      async extractBeliefs() {
+        throw new Error("unused");
+      },
     };
     const ai = withCache(inner);
     await ai.summarize({ text: "same" });
@@ -245,6 +260,9 @@ describe("withCache (#80)", () => {
         return { summary: `maxSentences:${request.maxSentences}`, confidence: 0.5 };
       },
       async classify() {
+        throw new Error("unused");
+      },
+      async extractBeliefs() {
         throw new Error("unused");
       },
     };
@@ -266,6 +284,9 @@ describe("withCache (#80)", () => {
       async classify() {
         throw new Error("unused");
       },
+      async extractBeliefs() {
+        throw new Error("unused");
+      },
     };
     const ai = withCache(inner);
     const a = await ai.summarize({ text: "alpha" });
@@ -285,6 +306,9 @@ describe("withCache (#80)", () => {
         calls++;
         // Mirrors DeterministicProvider: first label wins on a tie / no match.
         return { label: request.labels[0] ?? "none", confidence: 0.1 };
+      },
+      async extractBeliefs() {
+        throw new Error("unused");
       },
     };
     const ai = withCache(inner);
@@ -309,6 +333,9 @@ describe("withCache (#80)", () => {
       async classify(request) {
         seen.push([...request.labels]);
         return { label: request.labels[0] ?? "none", confidence: 0.5 };
+      },
+      async extractBeliefs() {
+        throw new Error("unused");
       },
     };
     const ai = withCache(inner);
@@ -339,6 +366,9 @@ describe("withCache (#80)", () => {
       async classify() {
         throw new Error("unused");
       },
+      async extractBeliefs() {
+        throw new Error("unused");
+      },
     };
     const ai = withCache(inner);
     const p1 = ai.summarize({ text: "same" });
@@ -365,6 +395,9 @@ describe("withCache (#80)", () => {
         return gateB.promise;
       },
       async classify() {
+        throw new Error("unused");
+      },
+      async extractBeliefs() {
         throw new Error("unused");
       },
     };
@@ -396,6 +429,9 @@ describe("withCache (#80)", () => {
         return request.text === "A" ? a.handle() : b.handle();
       },
       async classify() {
+        throw new Error("unused");
+      },
+      async extractBeliefs() {
         throw new Error("unused");
       },
     };
@@ -443,6 +479,9 @@ describe("withCache (#80)", () => {
       async classify() {
         throw new Error("unused");
       },
+      async extractBeliefs() {
+        throw new Error("unused");
+      },
     };
     const observations: AiObservation[] = [];
     const ai = withCache(inner, { onUsage: (o) => observations.push(o) });
@@ -473,6 +512,9 @@ describe("withCache (#80)", () => {
         return { summary: "fresh", confidence: 0.5 };
       },
       async classify() {
+        throw new Error("unused");
+      },
+      async extractBeliefs() {
         throw new Error("unused");
       },
     };
@@ -507,6 +549,9 @@ describe("withCache (#80)", () => {
       async classify() {
         throw new Error("unused");
       },
+      async extractBeliefs() {
+        throw new Error("unused");
+      },
     };
     const ai = withCache(inner, {
       onUsage: () => {
@@ -532,6 +577,9 @@ describe("withCache composed through createAi() (#80): AiLayer + cache together"
       },
       async classify() {
         throw new Error("unused");
+      },
+      async extractBeliefs() {
+        return { candidates: [], inferenceMechanism: "gated", promptSchemaVersion: "v0.1" };
       },
     };
     const observations: AiObservation[] = [];
@@ -572,6 +620,9 @@ describe("withCache composed through createAi() (#80): AiLayer + cache together"
       async classify() {
         throw new Error("unused");
       },
+      async extractBeliefs() {
+        return { candidates: [], inferenceMechanism: "counting", promptSchemaVersion: "v0.1" };
+      },
     };
     const ai = createAi({ provider, env: {} });
     await ai.summarize({ text: "same" });
@@ -589,6 +640,9 @@ describe("withCache composed through createAi() (#80): AiLayer + cache together"
       async classify() {
         throw new Error("unused");
       },
+      async extractBeliefs() {
+        return { candidates: [], inferenceMechanism: "audited", promptSchemaVersion: "v0.1" };
+      },
     };
     const observations: AiObservation[] = [];
     const ai = createAi({ provider, env: {}, onUsage: (o) => observations.push(o) });
@@ -597,5 +651,60 @@ describe("withCache composed through createAi() (#80): AiLayer + cache together"
     const hit = observations.find((o): o is AiRequestObservation => o.kind === "request" && o.cache === "hit");
     expect(hit?.provider).toBe("audited");
     expect(hit?.modelName).toBe("audited-v1");
+  });
+
+  it("deeply isolates nested extraction candidates and supporting evidence across cache hits", async () => {
+    let calls = 0;
+    const provider: AiProvider = {
+      name: "extract-test",
+      modelName: "extract-v1",
+      async summarize() {
+        throw new Error("unused");
+      },
+      async classify() {
+        throw new Error("unused");
+      },
+      async extractBeliefs() {
+        calls++;
+        return {
+          candidates: [
+            {
+              subject: "family",
+              claim: "Family first",
+              category: "values",
+              temporalScope: "durable",
+              evidenceText: "Family first",
+              supportingEvidence: [{ statementEnvelopeId: "env1", evidenceText: "Family first" }],
+              confidence: 0.9,
+            },
+          ],
+          inferenceMechanism: "extract-test:extract-v1",
+          promptSchemaVersion: "v0.1",
+          modelName: "extract-v1",
+        };
+      },
+    };
+
+    const ai = createAi({ provider, env: {} });
+    const req = {
+      currentQuestion: "What matters?",
+      currentStatement: "Family first",
+      currentStatementEnvelopeId: "env1",
+      priorTurns: [],
+      eligibleCategories: ["values"],
+    };
+
+    const res1 = await ai.extractBeliefs(req);
+    expect(calls).toBe(1);
+
+    // Mutate res1's candidates and nested supporting evidence array
+    (res1.candidates[0] as any).claim = "MUTATED_CLAIM";
+    (res1.candidates[0]!.supportingEvidence[0] as any).evidenceText = "MUTATED_EVIDENCE";
+
+    // Second call hit cache
+    const res2 = await ai.extractBeliefs(req);
+    expect(calls).toBe(1);
+    expect(res2.candidates[0]!.claim).toBe("Family first");
+    expect(res2.candidates[0]!.supportingEvidence[0]!.evidenceText).toBe("Family first");
   });
 });

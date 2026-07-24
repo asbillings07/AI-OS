@@ -65,6 +65,9 @@ describe("AI capability layer (ADR-0011)", () => {
       async classify() {
         return { label: "a", confidence: 0.9 };
       },
+      async extractBeliefs() {
+        return { candidates: [], inferenceMechanism: "invalid", promptSchemaVersion: "v0.1" };
+      },
     };
     const ai = createAi({ provider: invalidProvider });
     await expect(ai.summarize({ text: "hi" })).rejects.toThrow(/empty or invalid summary/);
@@ -78,6 +81,9 @@ describe("AI capability layer (ADR-0011)", () => {
       },
       async classify() {
         return { label: "a", confidence: 0.9 };
+      },
+      async extractBeliefs() {
+        return { candidates: [], inferenceMechanism: "blank", promptSchemaVersion: "v0.1" };
       },
     };
     const ai = createAi({ provider: blank });
@@ -93,6 +99,9 @@ describe("AI capability layer (ADR-0011)", () => {
       async classify() {
         return { label: "totally_made_up", confidence: 0.9 };
       },
+      async extractBeliefs() {
+        return { candidates: [], inferenceMechanism: "rogue", promptSchemaVersion: "v0.1" };
+      },
     };
     const ai = createAi({ provider: rogue });
     const classified = await ai.classify({ text: "hi", labels: ["a", "b"] });
@@ -100,6 +109,40 @@ describe("AI capability layer (ADR-0011)", () => {
     expect(classified.confidence).toBe(0);
     const summarized = await ai.summarize({ text: "hi" });
     expect(summarized.confidence).toBe(1); // clamped from 5
+  });
+
+  it("overrides provider-returned spoofed audit metadata with configured adapter identity", async () => {
+    const spoofedProvider: AiProvider = {
+      name: "real-provider",
+      modelName: "real-model-v1",
+      async summarize() {
+        throw new Error("unused");
+      },
+      async classify() {
+        throw new Error("unused");
+      },
+      async extractBeliefs() {
+        return {
+          candidates: [],
+          inferenceMechanism: "spoofed-provider:spoofed-model",
+          promptSchemaVersion: "v0.1-custom",
+          modelName: "spoofed-model",
+        };
+      },
+    };
+
+    const ai = createAi({ provider: spoofedProvider });
+    const result = await ai.extractBeliefs({
+      currentQuestion: "Q",
+      currentStatement: "Statement",
+      currentStatementEnvelopeId: "env1",
+      priorTurns: [],
+      eligibleCategories: ["values"],
+    });
+
+    expect(result.inferenceMechanism).toBe("real-provider:real-model-v1");
+    expect(result.modelName).toBe("real-model-v1");
+    expect(result.promptSchemaVersion).toBe("v0.1-custom");
   });
 
   it("records usage at the chokepoint (#80: as a 'miss' request observation)", async () => {
@@ -145,6 +188,9 @@ describe("AI capability layer (ADR-0011)", () => {
         async classify() {
           return { label: "a", confidence: 0.5 };
         },
+        async extractBeliefs() {
+          return { candidates: [], inferenceMechanism: "counting", promptSchemaVersion: "v0.1" };
+        },
       };
       const ai = createAi({ provider: counting, cache: false, env: { ORION_AI_CACHE: "on" } });
       await ai.summarize({ text: "same" });
@@ -163,6 +209,9 @@ describe("AI capability layer (ADR-0011)", () => {
         async classify() {
           return { label: "a", confidence: 0.5 };
         },
+        async extractBeliefs() {
+          return { candidates: [], inferenceMechanism: "counting", promptSchemaVersion: "v0.1" };
+        },
       };
       const ai = createAi({ provider: counting, cache: true, env: { ORION_AI_CACHE: "off" } });
       await ai.summarize({ text: "same" });
@@ -180,6 +229,9 @@ describe("AI capability layer (ADR-0011)", () => {
         },
         async classify() {
           return { label: "a", confidence: 0.5 };
+        },
+        async extractBeliefs() {
+          return { candidates: [], inferenceMechanism: "counting", promptSchemaVersion: "v0.1" };
         },
       };
       const ai = createAi({ provider: counting, env: { ORION_AI_CACHE: "off" } });

@@ -43,16 +43,137 @@ export interface ExtractionRequest {
 
 export type { CandidateBeliefProposal };
 
+export interface ExtractionResultMetadata {
+  readonly inferenceMechanism: string;
+  readonly promptSchemaVersion: string;
+  readonly modelName?: string;
+}
+
+export interface ExtractionResult {
+  readonly candidates: readonly CandidateBeliefProposal[];
+  readonly metadata: ExtractionResultMetadata;
+}
+
 export interface BeliefExtractor {
-  extractCandidates(request: ExtractionRequest): Promise<readonly CandidateBeliefProposal[]>;
+  extractCandidates(request: ExtractionRequest): Promise<ExtractionResult>;
 }
 
 // ============================================================================
 // 2. Two-Stage Deterministic Policy Gate
 // ============================================================================
 
+function getClauseSurroundingSpan(targetText: string, refText: string): string {
+  const refIdx = targetText.indexOf(refText);
+  if (refIdx < 0) return refText;
+
+  let start = refIdx;
+  while (start > 0 && !/[,;:.!?]/.test(targetText[start - 1]!)) {
+    start--;
+  }
+
+  let end = refIdx + refText.length;
+  while (end < targetText.length && !/[,;:.!?]/.test(targetText[end]!)) {
+    end++;
+  }
+
+  return targetText.slice(start, end).trim();
+}
+
 const SENSITIVE_TOPIC_PATTERN =
   /\b(health|medical|doctor|illness|diagnosis|treatment|medication|cancer|diabetes|therapy|financial|income|salary|debt|mortgage|bank|tax|political|election|vote|party|religion|church|faith|family|children|child|kid|kids|spouse|partner|marriage|marital)\b/i;
+
+const FIRST_PERSON_PRONOUN_PATTERN =
+  /\b(I|me|myself|mine|my|my own|I'm|I've|I'll|I'd|we|us|our|ours)\b/i;
+
+const THIRD_PARTY_REF_PATTERN =
+  /\b(you|your|yours|yourself|yourselves|he|she|they|him|her|his|hers|them|their|theirs|himself|herself|themselves|who|whom|whose|someone|somebody|anyone|anybody|everyone|everybody|nobody|no\s+one|other|others|friend|friends|colleague|colleagues|coworker|coworkers|neighbor|neighbors|mother|father|parent|parents|sister|sisters|brother|brothers|daughter|daughters|son|sons|spouse|partner|wife|husband|cousin|aunt|uncle|patient|patients|doctor|doctors|physician|person|people|boss|manager|client|clients|professor|professors|teacher|teachers)\b/i;
+
+const ATTITUDE_VERB_PATTERN =
+  /\b(think|thinks|thought|know|knows|knew|believe|believes|believed|said|says|stated|suspect|suspects|feel|feels|hope|hopes|assume|assumes|claim|claims|claimed|worry|worried|support|supporting|care|caring|help|helps|helping|assist|assisting)\b/i;
+
+const NEGATION_PATTERN =
+  /\b(not|n't|never|no|neither|nor|without|free|denies|denied|negative|false|don't|doesn't|didn't|haven't|hasn't|hadn't|won't|wouldn't|can't|couldn't|shouldn't|isn't|aren't|wasn't|weren't)\b/i;
+
+export type SensitiveAssertion = Readonly<{
+  subject: "self";
+  concept: string;
+  polarity: "affirmed" | "negated";
+}>;
+
+function normalizeSensitiveConcept(word: string): string {
+  const w = word.toLowerCase();
+  if (w === "children" || w === "kids" || w === "kid") return "child";
+  return w;
+}
+
+function parseClauseSensitiveAssertions(
+  clauseText: string,
+  isClaimText: boolean = false,
+): SensitiveAssertion[] | null {
+  const sensitiveMatches = Array.from(
+    clauseText.matchAll(new RegExp(SENSITIVE_TOPIC_PATTERN.source, "gi")),
+  );
+  if (sensitiveMatches.length === 0) {
+    return [];
+  }
+
+  // Fail closed if clause contains third parties, attitude verbs, or possessives
+  if (THIRD_PARTY_REF_PATTERN.test(clauseText) || ATTITUDE_VERB_PATTERN.test(clauseText) || /'s\b/i.test(clauseText)) {
+    return null;
+  }
+
+  const properNameMatches = Array.from(clauseText.matchAll(/\b([A-Z][a-z0-9_]+)\b/g));
+  for (const match of properNameMatches) {
+    const word = match[1]!;
+    if (
+      !FIRST_PERSON_PRONOUN_PATTERN.test(word) &&
+      !/^(This|That|It|The|A|An|In|On|At|For|With|To|And|But|Or|Family|Health|Career|Protecting|Has|Have|Protecting)$/i.test(
+        word,
+      )
+    ) {
+      return null;
+    }
+  }
+
+  const assertions: SensitiveAssertion[] = [];
+
+  for (const match of sensitiveMatches) {
+    const rawConcept = match[0]!.toLowerCase();
+    const concept = normalizeSensitiveConcept(rawConcept);
+
+    // Extract sub-segment starting at first-person pronoun ending around concept
+    const fpMatch = clauseText.match(/\b(I|me|myself|mine|my|our|we)\b/i);
+
+    // Claims synthesized by extractors (e.g., "Family focus", "Has two children") might omit explicit first-person pronouns
+    if (!fpMatch && !isClaimText) {
+      return null;
+    }
+
+    const sensIdx = match.index ?? 0;
+    const fpIdx = fpMatch ? fpMatch.index ?? 0 : 0;
+
+    const subSegment = clauseText.slice(Math.min(fpIdx, sensIdx), Math.max(fpIdx, sensIdx) + rawConcept.length);
+
+    // Verify local negation scope specifically for this concept sub-segment
+    // If the full clause contains conjunctions ("and", "but") before the concept, check negation in the concept sub-clause only
+    const subClauseStart = Math.max(0, clauseText.lastIndexOf("and ", sensIdx), clauseText.lastIndexOf("but ", sensIdx));
+    const conceptSubClause = subClauseStart > fpIdx ? clauseText.slice(subClauseStart, sensIdx + rawConcept.length) : subSegment;
+    const isLocalNegated = NEGATION_PATTERN.test(conceptSubClause);
+
+    // Ensure non-sensitive activity/study verbs do not match diagnosis/identity (e.g. "I study cancer")
+    if (/\b(study|research|work\s+on|teach|read\s+about|learned\s+about)\b/i.test(subSegment)) {
+      return null;
+    }
+
+    assertions.push({
+      subject: "self",
+      concept,
+      polarity: isLocalNegated ? "negated" : "affirmed",
+    });
+  }
+
+  return assertions;
+}
 
 const PROHIBITED_PATTERN =
   /\b(illegal|unlawful|explicit-pornography|hate-speech)\b/i;
@@ -179,11 +300,79 @@ export class DeterministicPolicyGate {
       return { valid: false };
     }
 
-    // Check sensitive content keywords across claim, evidence, or target statements
-    const isSensitive =
-      SENSITIVE_TOPIC_PATTERN.test(candidate.claim) ||
-      SENSITIVE_TOPIC_PATTERN.test(candidate.evidenceText) ||
-      targetStatementTexts.some((txt) => SENSITIVE_TOPIC_PATTERN.test(txt));
+    // Top-level evidenceText MUST be a verbatim substring of at least one target statement text
+    if (!targetStatementTexts.some((txt) => txt.includes(trimmedEvidence))) {
+      return { valid: false };
+    }
+
+    // Parse sensitive assertions for candidate.claim independently
+    const claimAssertions = parseClauseSensitiveAssertions(candidate.claim, true);
+    if (claimAssertions === null) {
+      return { valid: false };
+    }
+
+    const claimIsSensitive = claimAssertions.length > 0;
+
+    // Collect verified evidence clauses and refTexts
+    const verifiedEvidenceClauses: string[] = [];
+    for (const ref of candidate.supportingEvidence) {
+      const refText = ref.evidenceText.trim();
+      let targetStatementText = "";
+      if (ref.statementEnvelopeId === request.currentStatementEnvelopeId) {
+        targetStatementText = request.currentStatement;
+      } else {
+        const matchingTurn = request.priorTurns.find(
+          (t) => t.statementEnvelopeId === ref.statementEnvelopeId,
+        );
+        if (matchingTurn) targetStatementText = matchingTurn.statement;
+      }
+
+      const clause = getClauseSurroundingSpan(targetStatementText, refText);
+      verifiedEvidenceClauses.push(clause);
+      if (clause !== refText) {
+        verifiedEvidenceClauses.push(refText);
+      }
+    }
+
+    // Parse evidence assertions independently for each verified clause
+    const evidenceAssertions: SensitiveAssertion[] = [];
+    for (const clause of verifiedEvidenceClauses) {
+      const parsed = parseClauseSensitiveAssertions(clause);
+      if (parsed) {
+        evidenceAssertions.push(...parsed);
+      }
+    }
+
+    let evidenceIsSensitive = evidenceAssertions.length > 0;
+    if (!evidenceIsSensitive) {
+      evidenceIsSensitive = verifiedEvidenceClauses.some((clause) =>
+        SENSITIVE_TOPIC_PATTERN.test(clause),
+      );
+    }
+
+    // Reject sensitive/protected concepts unless they occur in the independently verified source evidence spans
+    if (claimIsSensitive && !evidenceIsSensitive) {
+      return { valid: false };
+    }
+
+    // Grounding check: Every sensitive assertion in candidate.claim MUST match
+    // at least one sensitive assertion parsed from verified evidence with identical subject, concept, and polarity.
+    if (claimIsSensitive) {
+      const grounded = claimAssertions.every((claimAssertion) =>
+        evidenceAssertions.some(
+          (evidenceAssertion) =>
+            evidenceAssertion.subject === claimAssertion.subject &&
+            evidenceAssertion.concept === claimAssertion.concept &&
+            evidenceAssertion.polarity === claimAssertion.polarity,
+        ),
+      );
+
+      if (!grounded) {
+        return { valid: false };
+      }
+    }
+
+    const isSensitive = claimIsSensitive || evidenceIsSensitive;
 
     // By default, onboarding proposals default to confirmation_required.
     // A proposal is assigned "allowed" only if its category is in allowedCategories AND non-sensitive.
@@ -289,7 +478,7 @@ export class ScriptedBeliefExtractor implements BeliefExtractor {
     this.#rules = rules;
   }
 
-  async extractCandidates(request: ExtractionRequest): Promise<readonly CandidateBeliefProposal[]> {
+  async extractCandidates(request: ExtractionRequest): Promise<ExtractionResult> {
     const text = request.currentStatement;
     const candidates: CandidateBeliefProposal[] = [];
 
@@ -311,7 +500,13 @@ export class ScriptedBeliefExtractor implements BeliefExtractor {
       }
     }
 
-    return candidates;
+    return {
+      candidates,
+      metadata: {
+        inferenceMechanism: "scripted",
+        promptSchemaVersion: "v0.1",
+      },
+    };
   }
 }
 
@@ -350,6 +545,9 @@ export interface OnboardingTurnState {
   readonly extractionSnapshot?: readonly ValidatedCandidateProposal[];
   readonly expectedBeliefIds?: readonly string[];
   readonly policyVersion?: string;
+  readonly inferenceMechanism?: string;
+  readonly promptSchemaVersion?: string;
+  readonly modelName?: string;
 }
 
 export interface OnboardingSessionState {
@@ -461,7 +659,16 @@ function foldStatementProcessed(
   state: OnboardingState,
   event: UserStatementProcessedEvent,
 ): OnboardingState {
-  const { sessionId, questionId, extractionResult, proposedBeliefIds, policyVersion } = event.payload;
+  const {
+    sessionId,
+    questionId,
+    extractionResult,
+    proposedBeliefIds,
+    policyVersion,
+    inferenceMechanism,
+    promptSchemaVersion,
+    modelName,
+  } = event.payload;
   const session = state.sessions.get(sessionId);
   if (!session) return state;
 
@@ -479,6 +686,9 @@ function foldStatementProcessed(
         extractionSnapshot: extractionResult,
         expectedBeliefIds,
         policyVersion,
+        inferenceMechanism,
+        promptSchemaVersion,
+        modelName,
       };
     }
     return turn;
@@ -1086,6 +1296,9 @@ export class OnboardingEngine {
     if (!currentTurn.extractionSnapshot) {
       const validatedProposals: ValidatedCandidateProposal[] = [];
       const expectedBeliefIds: string[] = [];
+      let inferenceMechanism = "skipped";
+      let promptSchemaVersion = "v0.1";
+      let modelName: string | undefined = undefined;
 
       if (this.#policyGate.isExtractionAllowed(persistedRawText)) {
         const priorTurns: ExtractionTurn[] = sessionAfterStmt.turns
@@ -1106,7 +1319,11 @@ export class OnboardingEngine {
           eligibleCategories,
         };
 
-        const rawCandidates = await this.#extractor.extractCandidates(extractionRequest);
+        const extractionRes = await this.#extractor.extractCandidates(extractionRequest);
+        const rawCandidates = extractionRes.candidates;
+        inferenceMechanism = extractionRes.metadata.inferenceMechanism;
+        promptSchemaVersion = extractionRes.metadata.promptSchemaVersion;
+        modelName = extractionRes.metadata.modelName;
 
         for (let i = 0; i < rawCandidates.length; i++) {
           const candidate = rawCandidates[i]!;
@@ -1158,6 +1375,9 @@ export class OnboardingEngine {
             extractionResult: validatedProposals,
             proposedBeliefIds: expectedBeliefIds,
             policyVersion: this.#policyGate.policyVersion,
+            inferenceMechanism,
+            promptSchemaVersion,
+            modelName,
             processedAt: occurredAt,
           },
         });
@@ -1208,8 +1428,9 @@ export class OnboardingEngine {
             sourceEventIds: candidate.sourceEventIds,
             confidence: candidate.confidence,
             categoryPolicy: candidate.categoryPolicy,
-            inferenceMechanism: "v0.1",
-            promptSchemaVersion: "v0.1",
+            inferenceMechanism: turnWithSnapshot.inferenceMechanism ?? "deterministic",
+            promptSchemaVersion: turnWithSnapshot.promptSchemaVersion ?? "v0.1",
+            modelName: turnWithSnapshot.modelName,
             validFrom: occurredAt,
             proposedAt: occurredAt,
           },

@@ -6,6 +6,8 @@ import {
   type AiUsage,
   type ClassifyRequest,
   type ClassifyResult,
+  type ExtractBeliefsRequest,
+  type ExtractBeliefsResult,
   type SummarizeRequest,
   type SummarizeResult,
 } from "./capabilities.js";
@@ -83,6 +85,27 @@ export class AiLayer implements AiCapabilities {
       return validated;
     } catch (error) {
       this.#record("classify", start, false, providerInvoked);
+      throw error;
+    }
+  }
+
+  async extractBeliefs(request: ExtractBeliefsRequest): Promise<ExtractBeliefsResult> {
+    const start = Date.now();
+    try {
+      const result = await this.#provider.extractBeliefs(request);
+      const modelName = this.#provider.modelName;
+      const inferenceMechanism = `${this.#provider.name}${modelName ? ":" + modelName : ""}`;
+
+      const validated: ExtractBeliefsResult = {
+        candidates: Array.isArray(result.candidates) ? result.candidates : [],
+        inferenceMechanism,
+        promptSchemaVersion: result.promptSchemaVersion ?? "v0.1",
+        modelName,
+      };
+      this.#record("extract_beliefs", start, true, true, 0.8);
+      return validated;
+    } catch (error) {
+      this.#record("extract_beliefs", start, false, true);
       throw error;
     }
   }

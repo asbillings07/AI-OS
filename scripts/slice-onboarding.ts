@@ -11,12 +11,13 @@
  *
  *   npm run slice:onboarding
  */
+import { createAi } from "@orion/ai";
 import {
   InProcessEventBus,
+  LlmBeliefExtractor,
   OnboardingEngine,
   OrionRuntime,
   ProjectionHost,
-  ScriptedBeliefExtractor,
   SqliteEventStore,
   onboardingProjection,
 } from "@orion/core";
@@ -25,7 +26,7 @@ const NOW = "2026-07-24T14:00:00.000Z";
 
 async function main(): Promise<void> {
   console.log("================================================================================");
-  console.log("ORION NATURAL-LANGUAGE ONBOARDING VERTICAL SLICE (#70)");
+  console.log("ORION NATURAL-LANGUAGE ONBOARDING VERTICAL SLICE (#70 / #71)");
   console.log("================================================================================\n");
 
   const store = new SqliteEventStore(":memory:");
@@ -38,37 +39,65 @@ async function main(): Promise<void> {
       projections: [host as ProjectionHost<unknown>],
     });
 
-    const extractor = new ScriptedBeliefExtractor([
-      {
-        pattern: /family|career|health/i,
-        proposals: [
-          {
-            subject: "family",
-            claim: "Family well-being",
-            category: "values",
-            temporalScope: "durable",
-            evidenceText: "family",
-            confidence: 0.95,
-          },
-          {
-            subject: "career",
-            claim: "Launching Orion AI-OS startup",
-            category: "goals",
-            temporalScope: "current",
-            evidenceText: "career",
-            confidence: 0.9,
-          },
-          {
-            subject: "health",
-            claim: "Protecting physical health and regular exercise",
-            category: "priorities",
-            temporalScope: "durable",
-            evidenceText: "health",
-            confidence: 0.85,
-          },
-        ],
+    // Provider-neutral LlmBeliefExtractor with AI capability layer
+    const ai = createAi({
+      provider: {
+        name: "demo-mock",
+        modelName: "demo-v1",
+        summarize: async () => ({ summary: "", confidence: 0 }),
+        classify: async () => ({ label: "", confidence: 0 }),
+        extractBeliefs: async (req) => ({
+          candidates: [
+            {
+              subject: "family",
+              claim: "Family well-being",
+              category: "values",
+              temporalScope: "durable",
+              evidenceText: "family",
+              supportingEvidence: [
+                {
+                  statementEnvelopeId: req.currentStatementEnvelopeId,
+                  evidenceText: "family",
+                },
+              ],
+              confidence: 0.95,
+            },
+            {
+              subject: "career",
+              claim: "Launching Orion AI-OS startup",
+              category: "goals",
+              temporalScope: "current",
+              evidenceText: "career",
+              supportingEvidence: [
+                {
+                  statementEnvelopeId: req.currentStatementEnvelopeId,
+                  evidenceText: "career",
+                },
+              ],
+              confidence: 0.9,
+            },
+            {
+              subject: "health",
+              claim: "Protecting physical health and regular exercise",
+              category: "priorities",
+              temporalScope: "durable",
+              evidenceText: "health",
+              supportingEvidence: [
+                {
+                  statementEnvelopeId: req.currentStatementEnvelopeId,
+                  evidenceText: "health",
+                },
+              ],
+              confidence: 0.85,
+            },
+          ],
+          inferenceMechanism: "demo-mock:demo-v1",
+          promptSchemaVersion: "v0.1",
+        }),
       },
-    ]);
+    });
+
+    const extractor = new LlmBeliefExtractor({ ai });
 
     const engine = new OnboardingEngine({
       runtime,
