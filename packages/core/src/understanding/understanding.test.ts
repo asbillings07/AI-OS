@@ -518,6 +518,27 @@ describe("Signal detection (deterministic)", () => {
     const c3 = fold([message({ threadId: "t3", messageId: "m3", subject: "Request accepted", body: "Your request was accepted; please sign the agreement." })]);
     expect(detectSignals(c3, "2026-07-15T12:00:00.000Z").map((s) => s.kind)).toContain("ExplicitRequest");
   });
+
+  it("clears earlier invitation when a later message in the active turn cancels or declines it (#88)", () => {
+    const c = fold([
+      message({ threadId: "t1", messageId: "m1", subject: "Meeting invitation: Sync", body: "Please RSVP to Sync." }),
+      message({ threadId: "t1", messageId: "m2", subject: "Re: Meeting invitation: Sync", body: "Dana canceled the sync meeting." }),
+    ]);
+    const kinds = detectSignals(c, "2026-07-15T12:00:00.000Z").map((s) => s.kind);
+    expect(kinds).not.toContain("Invitation");
+  });
+
+  it("bare 'following up' does NOT emit ExplicitRequest, but 'following up -- any thoughts' does (#88)", () => {
+    const bareContext = fold([
+      message({ threadId: "t1", messageId: "m1", subject: "Contract draft", body: "Just following up on my previous email." }),
+    ]);
+    expect(detectSignals(bareContext, "2026-07-15T12:00:00.000Z").map((s) => s.kind)).not.toContain("ExplicitRequest");
+
+    const thoughtsContext = fold([
+      message({ threadId: "t2", messageId: "m2", subject: "Contract draft", body: "Following up — any thoughts before Friday?" }),
+    ]);
+    expect(detectSignals(thoughtsContext, "2026-07-15T12:00:00.000Z").map((s) => s.kind)).toContain("ExplicitRequest");
+  });
 });
 
 describe("Timeline projection", () => {

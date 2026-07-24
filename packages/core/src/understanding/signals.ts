@@ -40,7 +40,7 @@ const AGING_HOURS = 24;
 const QUESTION_PATTERN = /\?|\b(can you|could you|would you|when can|are you able)\b/i;
 const COMPLETED_INVITATION_PATTERN = /\b(accepted|declined|canceled|cancelled|confirmed)\b/i;
 const EXPLICIT_REQUEST_PATTERN =
-  /\b(action required|please review|please approve|need your input|feedback needed|please sign|need you to|could you send|would you send|send me|let me know|any thoughts|thoughts on|following up)\b/i;
+  /\b(action required|please review|please approve|need your input|feedback needed|please sign|need you to|could you send|would you send|send me|let me know|any thoughts|thoughts on)\b/i;
 const INVITATION_PATTERN =
   /\b(invited you|invitation to|please rsvp|rsvp required|accept or decline|calendar invitation|meeting invitation|schedule a call)\b/i;
 
@@ -111,12 +111,16 @@ export function detectSignals(context: ContextState, now: string): Signal[] {
       let isInvitation = false;
       let isExplicitRequest = false;
 
-      for (const msg of activeInboundMessages) {
+      for (let i = 0; i < activeInboundMessages.length; i++) {
+        const msg = activeInboundMessages[i]!;
         const msgText = `${msg.subject} ${msg.body}`;
         const directMsgEventId = [msg.eventId];
 
-        if (INVITATION_PATTERN.test(msgText) && !COMPLETED_INVITATION_PATTERN.test(msgText)) {
-          if (!isInvitation) {
+        if (!isInvitation && INVITATION_PATTERN.test(msgText)) {
+          const isCompleted = activeInboundMessages
+            .slice(i)
+            .some((m) => COMPLETED_INVITATION_PATTERN.test(`${m.subject} ${m.body}`));
+          if (!isCompleted) {
             isInvitation = true;
             signals.push({
               kind: "Invitation",
@@ -128,17 +132,15 @@ export function detectSignals(context: ContextState, now: string): Signal[] {
           }
         }
 
-        if (EXPLICIT_REQUEST_PATTERN.test(msgText)) {
-          if (!isExplicitRequest) {
-            isExplicitRequest = true;
-            signals.push({
-              kind: "ExplicitRequest",
-              subject,
-              strength: 0.85,
-              evidence: "The message requests explicit action or input.",
-              sourceEventIds: directMsgEventId,
-            });
-          }
+        if (!isExplicitRequest && EXPLICIT_REQUEST_PATTERN.test(msgText)) {
+          isExplicitRequest = true;
+          signals.push({
+            kind: "ExplicitRequest",
+            subject,
+            strength: 0.85,
+            evidence: "The message requests explicit action or input.",
+            sourceEventIds: directMsgEventId,
+          });
         }
       }
 
