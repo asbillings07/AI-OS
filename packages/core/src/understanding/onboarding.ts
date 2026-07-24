@@ -86,161 +86,130 @@ const FIRST_PERSON_PRONOUN_PATTERN =
   /\b(I|me|myself|mine|my|my own|I'm|I've|I'll|I'd|we|us|our|ours)\b/i;
 
 const THIRD_PARTY_REF_PATTERN =
-  /\b(you|your|yours|yourself|yourselves|he|she|they|him|her|his|hers|them|their|theirs|himself|herself|themselves|who|whom|whose|someone|somebody|anyone|anybody|everyone|everybody|nobody|no\s+one|other|others|friend|friends|colleague|colleagues|coworker|coworkers|neighbor|neighbors|mother|father|parent|parents|sister|sisters|brother|brothers|daughter|daughters|son|sons|spouse|partner|wife|husband|cousin|aunt|uncle|patient|patients|doctor|doctors|physician|person|people|boss|manager|client|clients)\b/i;
+  /\b(you|your|yours|yourself|yourselves|he|she|they|him|her|his|hers|them|their|theirs|himself|herself|themselves|who|whom|whose|someone|somebody|anyone|anybody|everyone|everybody|nobody|no\s+one|other|others|friend|friends|colleague|colleagues|coworker|coworkers|neighbor|neighbors|mother|father|parent|parents|sister|sisters|brother|brothers|daughter|daughters|son|sons|spouse|partner|wife|husband|cousin|aunt|uncle|patient|patients|doctor|doctors|physician|person|people|boss|manager|client|clients|professor|professors|teacher|teachers)\b/i;
 
 const ATTITUDE_VERB_PATTERN =
-  /\b(think|thinks|thought|believe|believes|believed|said|says|stated|suspect|suspects|feel|feels|hope|hopes|assume|assumes|claim|claims|claimed|worry|worried|support|supporting|care|caring|help|helps|helping|assist|assisting)\b/i;
+  /\b(think|thinks|thought|know|knows|knew|believe|believes|believed|said|says|stated|suspect|suspects|feel|feels|hope|hopes|assume|assumes|claim|claims|claimed|worry|worried|support|supporting|care|caring|help|helps|helping|assist|assisting)\b/i;
 
 const NEGATION_PATTERN =
   /\b(not|n't|never|no|neither|nor|without|free|denies|denied|negative|false|don't|doesn't|didn't|haven't|hasn't|hadn't|won't|wouldn't|can't|couldn't|shouldn't|isn't|aren't|wasn't|weren't)\b/i;
 
-function hasThirdPartyOrNegationInSegment(
-  segment: string,
-  sensitiveWord: string,
-  claimIsNegated: boolean = false,
-): boolean {
-  if (/'s\b/i.test(segment)) {
-    return true;
-  }
+export type SensitiveAssertion = Readonly<{
+  subject: "self";
+  concept: string;
+  polarity: "affirmed" | "negated";
+}>;
 
-  if (ATTITUDE_VERB_PATTERN.test(segment)) {
-    return true;
-  }
-
-  if (!claimIsNegated && NEGATION_PATTERN.test(segment)) {
-    return true;
-  }
-
-  const matches = segment.matchAll(new RegExp(THIRD_PARTY_REF_PATTERN.source, "gi"));
-  for (const match of matches) {
-    const word = match[0]!.toLowerCase();
-    if (word !== sensitiveWord.toLowerCase()) {
-      return true;
-    }
-  }
-
-  const properNameMatches = segment.matchAll(/\b([A-Z][a-z0-9_]+)\b/g);
-  for (const match of properNameMatches) {
-    const word = match[1]!;
-    if (
-      !FIRST_PERSON_PRONOUN_PATTERN.test(word) &&
-      !/^(This|That|It|The|A|An|In|On|At|For|With|To|And|But|Or|Family|Health|Career|Protecting)$/i.test(
-        word,
-      )
-    ) {
-      return true;
-    }
-  }
-
-  return false;
+function normalizeSensitiveConcept(word: string): string {
+  const w = word.toLowerCase();
+  if (w === "children" || w === "kids" || w === "kid") return "child";
+  return w;
 }
 
-function checkPositiveSelfAttribution(
-  span: string,
-  sensitiveWord: string,
-  claimIsNegated: boolean = false,
-): boolean {
-  if (!claimIsNegated && NEGATION_PATTERN.test(span)) {
-    return false;
-  }
-
-  const sensitiveRegex = new RegExp(`\\b${sensitiveWord}\\b`, "i");
-
-  // Proof 1: Possessive Self-Ownership: "my [sensitiveWord]" or "our [sensitiveWord]"
-  const possessivePattern = new RegExp(
-    `\\b(?:my|our)\\s+(?:[a-z0-9_]+\\s+){0,2}${sensitiveWord}\\b`,
-    "i",
+function parseClaimSensitiveAssertions(claimText: string): SensitiveAssertion[] | null {
+  const sensitiveMatches = Array.from(
+    claimText.matchAll(new RegExp(SENSITIVE_TOPIC_PATTERN.source, "gi")),
   );
-  const possessiveMatch = span.match(possessivePattern);
-  if (possessiveMatch) {
-    const between = possessiveMatch[0]!;
-    if (!hasThirdPartyOrNegationInSegment(between, sensitiveWord, claimIsNegated)) {
-      return true;
-    }
+  if (sensitiveMatches.length === 0) {
+    return [];
   }
 
-  // Proof 2: First-Person Subject: "I / we / I'm / I've / etc." governing sensitiveWord
-  const firstPersonSubjectRegex = /\b(I|I'm|I've|I'll|I'd|we|we're|we've)\b/gi;
-  const firstPersonMatches = Array.from(span.matchAll(firstPersonSubjectRegex));
-  for (const fpMatch of firstPersonMatches) {
-    const fpIdx = fpMatch.index ?? 0;
-    const sensitiveMatch = span.match(sensitiveRegex);
-    if (sensitiveMatch) {
-      const sensIdx = sensitiveMatch.index ?? 0;
-      if (fpIdx < sensIdx) {
-        const segment = span.slice(fpIdx + fpMatch[0]!.length, sensIdx);
-        if (segment.length <= 80 && !hasThirdPartyOrNegationInSegment(segment, sensitiveWord, claimIsNegated)) {
-          return true;
+  const assertions: SensitiveAssertion[] = [];
+
+  for (const match of sensitiveMatches) {
+    const rawConcept = match[0]!.toLowerCase();
+    const concept = normalizeSensitiveConcept(rawConcept);
+
+    const thirdPartyMatches = Array.from(
+      claimText.matchAll(new RegExp(THIRD_PARTY_REF_PATTERN.source, "gi")),
+    );
+    for (const tpMatch of thirdPartyMatches) {
+      const word = tpMatch[0]!;
+      const wordNorm = normalizeSensitiveConcept(word);
+      if (wordNorm !== concept) {
+        return null;
+      }
+    }
+
+    if (ATTITUDE_VERB_PATTERN.test(claimText) || /'s\b/i.test(claimText)) {
+      return null;
+    }
+
+    const polarity: "affirmed" | "negated" = NEGATION_PATTERN.test(claimText)
+      ? "negated"
+      : "affirmed";
+
+    assertions.push({
+      subject: "self",
+      concept,
+      polarity,
+    });
+  }
+
+  return assertions;
+}
+
+function parseEvidenceSensitiveAssertions(clause: string): SensitiveAssertion[] | null {
+  const sensitiveMatches = Array.from(
+    clause.matchAll(new RegExp(SENSITIVE_TOPIC_PATTERN.source, "gi")),
+  );
+  if (sensitiveMatches.length === 0) {
+    return [];
+  }
+
+  if (!FIRST_PERSON_PRONOUN_PATTERN.test(clause)) {
+    return null;
+  }
+
+  if (ATTITUDE_VERB_PATTERN.test(clause) || /'s\b/i.test(clause)) {
+    return null;
+  }
+
+  const assertions: SensitiveAssertion[] = [];
+
+  for (const match of sensitiveMatches) {
+    const rawConcept = match[0]!.toLowerCase();
+    const concept = normalizeSensitiveConcept(rawConcept);
+
+    const thirdPartyMatches = Array.from(
+      clause.matchAll(new RegExp(THIRD_PARTY_REF_PATTERN.source, "gi")),
+    );
+    for (const tpMatch of thirdPartyMatches) {
+      const word = tpMatch[0]!;
+      const wordNorm = normalizeSensitiveConcept(word);
+      if (wordNorm !== concept) {
+        return null;
+      }
+    }
+
+    const properNameMatches = Array.from(clause.matchAll(/\b([A-Z][a-z0-9_]+)\b/g));
+    for (const match of properNameMatches) {
+      const word = match[1]!;
+      if (
+        !FIRST_PERSON_PRONOUN_PATTERN.test(word) &&
+        !/^(This|That|It|The|A|An|In|On|At|For|With|To|And|But|Or|Family|Health|Career|Protecting)$/i.test(
+          word,
+        )
+      ) {
+        const wordNorm = normalizeSensitiveConcept(word);
+        if (wordNorm !== concept) {
+          return null;
         }
       }
     }
+
+    const polarity: "affirmed" | "negated" = NEGATION_PATTERN.test(clause)
+      ? "negated"
+      : "affirmed";
+
+    assertions.push({
+      subject: "self",
+      concept,
+      polarity,
+    });
   }
 
-  // Proof 3: Sensitive Keyword + Direct First-Person Relation ("to me", "for me", "for us", "to us", "to my ...")
-  const relationRegex = new RegExp(
-    `\\b${sensitiveWord}\\b[\\s\\S]*?\\b(to|for)\\s+(me|us|myself|my|our)\\b`,
-    "i",
-  );
-  const relationMatch = span.match(relationRegex);
-  if (relationMatch) {
-    const segment = relationMatch[0]!;
-    if (segment.length <= 80 && !hasThirdPartyOrNegationInSegment(segment, sensitiveWord, claimIsNegated)) {
-      return true;
-    }
-  }
-
-  // Proof 4: First-Person Object / Recipient ("diagnosed me with [sensitiveWord]", "treated me for [sensitiveWord]", "affects me")
-  const objectRegex = new RegExp(
-    `\\b(diagnosed|treated|affects|helps|given)\\s+(me|us)\\b[\\s\\S]*?\\b${sensitiveWord}\\b`,
-    "i",
-  );
-  const objectMatch = span.match(objectRegex);
-  if (objectMatch) {
-    const segment = objectMatch[0]!;
-    if (segment.length <= 80 && !hasThirdPartyOrNegationInSegment(segment, sensitiveWord, claimIsNegated)) {
-      return true;
-    }
-  }
-
-  // Proof 5: First-Person Identity Predicate ("I am a [sensitiveWord]" / "I am [sensitiveWord]")
-  const identityRegex = new RegExp(
-    `\\b(I|I'm|we|we're)\\s+(am|are|was|were)?\\s*(a|an)?\\s*[^,;:.!?]*?\\b${sensitiveWord}\\b`,
-    "i",
-  );
-  const identityMatch = span.match(identityRegex);
-  if (identityMatch) {
-    const segment = identityMatch[0]!;
-    if (segment.length <= 80 && !hasThirdPartyOrNegationInSegment(segment, sensitiveWord, claimIsNegated)) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-function isSelfAttributedSensitiveSpan(
-  span: string,
-  claimIsNegated: boolean = false,
-): boolean {
-  const sensitiveMatches = Array.from(
-    span.matchAll(new RegExp(SENSITIVE_TOPIC_PATTERN.source, "gi")),
-  );
-  if (sensitiveMatches.length === 0) {
-    return true;
-  }
-
-  if (!FIRST_PERSON_PRONOUN_PATTERN.test(span)) {
-    return false;
-  }
-
-  for (const match of sensitiveMatches) {
-    const sensitiveWord = match[0]!;
-    if (!checkPositiveSelfAttribution(span, sensitiveWord, claimIsNegated)) {
-      return false;
-    }
-  }
-
-  return true;
+  return assertions;
 }
 
 const PROHIBITED_PATTERN =
@@ -373,83 +342,70 @@ export class DeterministicPolicyGate {
       return { valid: false };
     }
 
-    const claimSensitiveWords = Array.from(
-      candidate.claim.matchAll(new RegExp(SENSITIVE_TOPIC_PATTERN.source, "gi")),
-    ).map((m) => m[0]!.toLowerCase());
+    // Parse sensitive assertions for candidate.claim independently
+    const claimAssertions = parseClaimSensitiveAssertions(candidate.claim);
+    if (claimAssertions === null) {
+      return { valid: false };
+    }
 
-    const claimIsSensitive = claimSensitiveWords.length > 0;
-    const claimIsNegated = NEGATION_PATTERN.test(candidate.claim);
-    const evidenceIsSensitive =
-      SENSITIVE_TOPIC_PATTERN.test(candidate.evidenceText) ||
-      candidate.supportingEvidence.some((s) => SENSITIVE_TOPIC_PATTERN.test(s.evidenceText));
+    const claimIsSensitive = claimAssertions.length > 0;
+
+    // Collect verified evidence clauses and refTexts
+    const verifiedEvidenceClauses: string[] = [];
+    for (const ref of candidate.supportingEvidence) {
+      const refText = ref.evidenceText.trim();
+      let targetStatementText = "";
+      if (ref.statementEnvelopeId === request.currentStatementEnvelopeId) {
+        targetStatementText = request.currentStatement;
+      } else {
+        const matchingTurn = request.priorTurns.find(
+          (t) => t.statementEnvelopeId === ref.statementEnvelopeId,
+        );
+        if (matchingTurn) targetStatementText = matchingTurn.statement;
+      }
+
+      const clause = getClauseSurroundingSpan(targetStatementText, refText);
+      verifiedEvidenceClauses.push(clause);
+      if (clause !== refText) {
+        verifiedEvidenceClauses.push(refText);
+      }
+    }
+
+    // Parse evidence assertions independently for each verified clause
+    const evidenceAssertions: SensitiveAssertion[] = [];
+    for (const clause of verifiedEvidenceClauses) {
+      const parsed = parseEvidenceSensitiveAssertions(clause);
+      if (parsed) {
+        evidenceAssertions.push(...parsed);
+      }
+    }
+
+    let evidenceIsSensitive = evidenceAssertions.length > 0;
+    if (!evidenceIsSensitive) {
+      evidenceIsSensitive = verifiedEvidenceClauses.some((clause) =>
+        SENSITIVE_TOPIC_PATTERN.test(clause),
+      );
+    }
 
     // Reject sensitive/protected concepts unless they occur in the independently verified source evidence spans
     if (claimIsSensitive && !evidenceIsSensitive) {
       return { valid: false };
     }
 
-    // Claim-bound sensitive concept verification (#71):
-    // Every sensitive topic concept asserted in candidate.claim MUST occur in at least one verified evidence span
-    // AND be positively self-attributed to the user in that span with matching polarity.
+    // Grounding check: Every sensitive assertion in candidate.claim MUST match
+    // at least one sensitive assertion parsed from verified evidence with identical subject, concept, and polarity.
     if (claimIsSensitive) {
-      for (const sensitiveWord of claimSensitiveWords) {
-        let wordSupportedAndSelfAttributed = false;
+      const grounded = claimAssertions.every((claimAssertion) =>
+        evidenceAssertions.some(
+          (evidenceAssertion) =>
+            evidenceAssertion.subject === claimAssertion.subject &&
+            evidenceAssertion.concept === claimAssertion.concept &&
+            evidenceAssertion.polarity === claimAssertion.polarity,
+        ),
+      );
 
-        for (const ref of candidate.supportingEvidence) {
-          const refText = ref.evidenceText.trim();
-          let targetStatementText = "";
-          if (ref.statementEnvelopeId === request.currentStatementEnvelopeId) {
-            targetStatementText = request.currentStatement;
-          } else {
-            const matchingTurn = request.priorTurns.find(
-              (t) => t.statementEnvelopeId === ref.statementEnvelopeId,
-            );
-            if (matchingTurn) targetStatementText = matchingTurn.statement;
-          }
-
-          const clause = getClauseSurroundingSpan(targetStatementText, refText);
-          const wordRegex = new RegExp(`\\b${sensitiveWord}\\b`, "i");
-
-          if (wordRegex.test(clause) || wordRegex.test(refText)) {
-            if (
-              checkPositiveSelfAttribution(clause, sensitiveWord, claimIsNegated) ||
-              checkPositiveSelfAttribution(refText, sensitiveWord, claimIsNegated)
-            ) {
-              wordSupportedAndSelfAttributed = true;
-              break;
-            }
-          }
-        }
-
-        if (!wordSupportedAndSelfAttributed) {
-          return { valid: false };
-        }
-      }
-    }
-
-    // Structural self-attribution requirement for sensitive evidence (#71):
-    // Every verified evidence span containing sensitive topics must be structurally self-attributed to the user.
-    if (evidenceIsSensitive) {
-      for (const ref of candidate.supportingEvidence) {
-        const refText = ref.evidenceText.trim();
-        let targetStatementText = "";
-        if (ref.statementEnvelopeId === request.currentStatementEnvelopeId) {
-          targetStatementText = request.currentStatement;
-        } else {
-          const matchingTurn = request.priorTurns.find(
-            (t) => t.statementEnvelopeId === ref.statementEnvelopeId,
-          );
-          if (matchingTurn) targetStatementText = matchingTurn.statement;
-        }
-
-        const clause = getClauseSurroundingSpan(targetStatementText, refText);
-
-        if (
-          !isSelfAttributedSensitiveSpan(clause, claimIsNegated) &&
-          !isSelfAttributedSensitiveSpan(refText, claimIsNegated)
-        ) {
-          return { valid: false };
-        }
+      if (!grounded) {
+        return { valid: false };
       }
     }
 

@@ -10,6 +10,7 @@ import {
   onboardingProjection,
   DeterministicPolicyGate,
   type ExtractionRequest,
+  type CandidateBeliefProposal,
 } from "../index.js";
 
 const DEFAULT_POLICY_GATE = new DeterministicPolicyGate();
@@ -1045,6 +1046,57 @@ describe("Candidate Belief Extraction from Natural Language (#71)", () => {
     expect(proposedBeliefs).toHaveLength(0);
     const session = host.state.sessions.get(sessionId)!;
     expect(session.beliefs.size).toBe(0);
+  });
+
+  it("Contract Check 15: Sensitive assertion claim/evidence grounding matrix verification", async () => {
+    const policyGate = new DeterministicPolicyGate({
+      allowedCategories: ALL_CATEGORIES,
+    });
+
+    const testCases: {
+      claim: string;
+      evidence: string;
+      expectedValid: boolean;
+    }[] = [
+      { claim: "I have cancer", evidence: "I have cancer", expectedValid: true },
+      { claim: "I do not have cancer", evidence: "I do not have cancer", expectedValid: true },
+      { claim: "I have cancer", evidence: "I do not have cancer", expectedValid: false },
+      { claim: "I do not have cancer", evidence: "I have cancer", expectedValid: false },
+      { claim: "I have cancer", evidence: "I know my professor has cancer", expectedValid: false },
+      { claim: "I have cancer", evidence: "I think you have cancer", expectedValid: false },
+      { claim: "I have diabetes", evidence: "I have cancer", expectedValid: false },
+    ];
+
+    for (const [idx, tc] of testCases.entries()) {
+      const candidate: CandidateBeliefProposal = {
+        subject: "health",
+        claim: tc.claim,
+        category: "values",
+        temporalScope: "durable",
+        evidenceText: tc.evidence,
+        supportingEvidence: [
+          {
+            statementEnvelopeId: "evt_stmt_matrix",
+            evidenceText: tc.evidence,
+          },
+        ],
+        confidence: 0.95,
+      };
+
+      const request: ExtractionRequest = {
+        currentQuestion: "Tell me about your health",
+        currentStatement: tc.evidence,
+        currentStatementEnvelopeId: "evt_stmt_matrix",
+        priorTurns: [],
+        eligibleCategories: policyGate.getEligibleCategories(),
+      };
+
+      const res = policyGate.validateCandidate(candidate, request);
+      expect(
+        res.valid,
+        `Matrix test case #${idx + 1} failed: claim="${tc.claim}", evidence="${tc.evidence}"`,
+      ).toBe(tc.expectedValid);
+    }
   });
 
   it("Acceptance Case: User correction of an earlier statement produces corrected belief candidate", async () => {
