@@ -1160,10 +1160,10 @@ describe("Natural-language onboarding baseline (#70)", () => {
       eligibleCategories: defaultGate.getEligibleCategories(),
     };
 
-    // A. Personal claim (family/children/health) in default gate -> confirmation_required
+    // A. Personal claim (family/children) in default gate -> confirmation_required
     const familyCandidate = {
       subject: "family",
-      claim: "Has two children and spouse with cancer",
+      claim: "Has two children",
       category: "roles_and_relationships" as const,
       temporalScope: "durable" as const,
       evidenceText: "two children",

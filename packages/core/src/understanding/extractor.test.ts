@@ -843,6 +843,108 @@ describe("Candidate Belief Extraction from Natural Language (#71)", () => {
     expect(resB.proposedBeliefs).toHaveLength(0);
   });
 
+  it("Contract Check 11: Reject sensitive claims where claim's sensitive concept does not match self-attributed evidence concept (e.g. claim 'I have diabetes' with evidence 'I have cancer')", async () => {
+    const store = new SqliteEventStore(":memory:");
+    const bus = new InProcessEventBus();
+    const host = new ProjectionHost(onboardingProjection);
+    const runtime = new OrionRuntime({ bus, store, projections: [host as ProjectionHost<unknown>] });
+
+    const policyGate = new DeterministicPolicyGate({
+      allowedCategories: ALL_CATEGORIES,
+    });
+
+    const ai = createMockAi(async (req) => ({
+      candidates: [
+        {
+          subject: "health",
+          claim: "I have diabetes",
+          category: "values",
+          temporalScope: "durable",
+          evidenceText: "I have cancer",
+          supportingEvidence: [
+            {
+              statementEnvelopeId: req.currentStatementEnvelopeId,
+              evidenceText: "I have cancer",
+            },
+          ],
+          confidence: 0.95,
+        },
+      ],
+    }));
+
+    const extractor = new LlmBeliefExtractor({ ai });
+    const engine = new OnboardingEngine({
+      runtime,
+      extractor,
+      policyGate,
+      getProjectionState: () => host.state,
+    });
+
+    const { sessionId, questionId } = await engine.startSession({ sessionId: "sess_concept_mismatch", now: NOW });
+    const { proposedBeliefs } = await engine.recordStatement({
+      sessionId,
+      questionId,
+      rawText: "I have cancer.",
+      now: NOW,
+    });
+
+    // Must be rejected because claim's sensitive concept 'diabetes' is not in the evidence
+    expect(proposedBeliefs).toHaveLength(0);
+    const session = host.state.sessions.get(sessionId)!;
+    expect(session.beliefs.size).toBe(0);
+  });
+
+  it("Contract Check 12: Reject pronoun-transfer sensitive claims (e.g. 'I think he has cancer')", async () => {
+    const store = new SqliteEventStore(":memory:");
+    const bus = new InProcessEventBus();
+    const host = new ProjectionHost(onboardingProjection);
+    const runtime = new OrionRuntime({ bus, store, projections: [host as ProjectionHost<unknown>] });
+
+    const policyGate = new DeterministicPolicyGate({
+      allowedCategories: ALL_CATEGORIES,
+    });
+
+    const ai = createMockAi(async (req) => ({
+      candidates: [
+        {
+          subject: "health",
+          claim: "I have cancer",
+          category: "values",
+          temporalScope: "durable",
+          evidenceText: "I think he has cancer",
+          supportingEvidence: [
+            {
+              statementEnvelopeId: req.currentStatementEnvelopeId,
+              evidenceText: "I think he has cancer",
+            },
+          ],
+          confidence: 0.95,
+        },
+      ],
+    }));
+
+    const extractor = new LlmBeliefExtractor({ ai });
+    const engine = new OnboardingEngine({
+      runtime,
+      extractor,
+      policyGate,
+      getProjectionState: () => host.state,
+    });
+
+    const { sessionId, questionId } = await engine.startSession({ sessionId: "sess_pronoun_transfer", now: NOW });
+    const { proposedBeliefs } = await engine.recordStatement({
+      sessionId,
+      questionId,
+      rawText: "I think he has cancer.",
+      now: NOW,
+    });
+
+    // Must be rejected because 'cancer' is attributed to 'he', not the user
+    expect(proposedBeliefs).toHaveLength(0);
+    const session = host.state.sessions.get(sessionId)!;
+    expect(session.beliefs.size).toBe(0);
+  });
+
   it("Acceptance Case: User correction of an earlier statement produces corrected belief candidate", async () => {
     const store = new SqliteEventStore(":memory:");
     const bus = new InProcessEventBus();

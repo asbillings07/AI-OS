@@ -86,7 +86,7 @@ const FIRST_PERSON_PRONOUN_PATTERN =
   /\b(I|me|myself|mine|my|my own|I'm|I've|I'll|I'd|we|us|our|ours)\b/i;
 
 const THIRD_PARTY_REF_PATTERN =
-  /\b(friend|friends|colleague|colleagues|coworker|coworkers|neighbor|neighbors|mother|father|parent|parents|sister|sisters|brother|brothers|daughter|daughters|son|sons|spouse|partner|wife|husband|cousin|aunt|uncle|patient|patients|doctor|doctors|physician|someone|somebody|person|people|boss|manager)\b/i;
+  /\b(friend|friends|colleague|colleagues|coworker|coworkers|neighbor|neighbors|mother|father|parent|parents|sister|sisters|brother|brothers|daughter|daughters|son|sons|spouse|partner|wife|husband|cousin|aunt|uncle|patient|patients|doctor|doctors|physician|someone|somebody|person|people|boss|manager|he|she|they|him|her|his|hers|them|their|theirs|himself|herself|themselves)\b/i;
 
 const THIRD_PARTY_VERB_PATTERN =
   /\b(support|supporting|worry|worried|care|caring|help|helps|helping|assist|assisting)\b/i;
@@ -351,7 +351,11 @@ export class DeterministicPolicyGate {
       return { valid: false };
     }
 
-    const claimIsSensitive = SENSITIVE_TOPIC_PATTERN.test(candidate.claim);
+    const claimSensitiveWords = Array.from(
+      candidate.claim.matchAll(new RegExp(SENSITIVE_TOPIC_PATTERN.source, "gi")),
+    ).map((m) => m[0]!.toLowerCase());
+
+    const claimIsSensitive = claimSensitiveWords.length > 0;
     const evidenceIsSensitive =
       SENSITIVE_TOPIC_PATTERN.test(candidate.evidenceText) ||
       candidate.supportingEvidence.some((s) => SENSITIVE_TOPIC_PATTERN.test(s.evidenceText));
@@ -361,10 +365,48 @@ export class DeterministicPolicyGate {
       return { valid: false };
     }
 
-    // Structural self-attribution requirement for sensitive claims (#71):
-    // Every verified evidence span supporting a sensitive claim must be structurally self-attributed to the user.
-    // Evidence spans with third-party subjects (e.g., "Sam has cancer", "My friend has cancer") cannot authorize sensitive claims.
+    // Claim-bound sensitive concept verification (#71):
+    // Every sensitive topic concept asserted in candidate.claim MUST occur in at least one verified evidence span
+    // AND be positively self-attributed to the user in that span.
     if (claimIsSensitive) {
+      for (const sensitiveWord of claimSensitiveWords) {
+        let wordSupportedAndSelfAttributed = false;
+
+        for (const ref of candidate.supportingEvidence) {
+          const refText = ref.evidenceText.trim();
+          let targetStatementText = "";
+          if (ref.statementEnvelopeId === request.currentStatementEnvelopeId) {
+            targetStatementText = request.currentStatement;
+          } else {
+            const matchingTurn = request.priorTurns.find(
+              (t) => t.statementEnvelopeId === ref.statementEnvelopeId,
+            );
+            if (matchingTurn) targetStatementText = matchingTurn.statement;
+          }
+
+          const clause = getClauseSurroundingSpan(targetStatementText, refText);
+          const wordRegex = new RegExp(`\\b${sensitiveWord}\\b`, "i");
+
+          if (wordRegex.test(clause) || wordRegex.test(refText)) {
+            if (
+              checkPositiveSelfAttribution(clause, sensitiveWord) ||
+              checkPositiveSelfAttribution(refText, sensitiveWord)
+            ) {
+              wordSupportedAndSelfAttributed = true;
+              break;
+            }
+          }
+        }
+
+        if (!wordSupportedAndSelfAttributed) {
+          return { valid: false };
+        }
+      }
+    }
+
+    // Structural self-attribution requirement for sensitive evidence (#71):
+    // Every verified evidence span containing sensitive topics must be structurally self-attributed to the user.
+    if (evidenceIsSensitive) {
       for (const ref of candidate.supportingEvidence) {
         const refText = ref.evidenceText.trim();
         let targetStatementText = "";
