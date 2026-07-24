@@ -7,8 +7,10 @@ import {
   DeterministicPolicyGate,
   OnboardingEngine,
   ScriptedBeliefExtractor,
+  determineSourceEventIds,
   onboardingProjection,
   type CandidateBeliefProposal,
+  type ExtractionRequest,
 } from "./onboarding.js";
 
 const NOW = "2026-07-24T12:00:00.000Z";
@@ -174,7 +176,7 @@ describe("Natural-language onboarding baseline (#70)", () => {
       });
 
       // Ask targeted follow-up question
-      const { questionId: q2, text: followUpText } = await engine.askFollowUp({
+      const { questionId: q2 } = await engine.askFollowUp({
         sessionId,
         questionText: "What about them matters most to you right now?",
         now: NOW,
@@ -202,7 +204,7 @@ describe("Natural-language onboarding baseline (#70)", () => {
     }
   });
 
-  it("Fixture Journey 3: Ambiguous answer 'I don't know right now' produces NO belief", async () => {
+  it("Fixture Journey 3: Ambiguous answer 'I don't know right now' pauses session with NO belief", async () => {
     const store = new SqliteEventStore(":memory:");
     try {
       const bus = new InProcessEventBus();
@@ -235,7 +237,7 @@ describe("Natural-language onboarding baseline (#70)", () => {
       const sessionState = host.state.sessions.get(sessionId)!;
       expect(sessionState.beliefs.size).toBe(0);
       expect(sessionState.turns).toHaveLength(1);
-      expect(sessionState.turns[0]!.statementId).toBe("stmt_sess_ambig_1_q_sess_ambig_1_1");
+      expect(sessionState.status).toBe("paused"); // Terminal paused state reached
     } finally {
       store.close();
     }
@@ -306,6 +308,14 @@ describe("Natural-language onboarding baseline (#70)", () => {
       });
       expect(rejected).toBe(true);
 
+      // Attempting to confirm rejected belief fails
+      const confirmRejected = await engine.confirmBelief({
+        sessionId,
+        beliefId: sportsBelief.beliefId,
+        now: NOW,
+      });
+      expect(confirmRejected).toBe(false);
+
       // User corrects work belief
       const { newBeliefId } = await engine.correctBelief({
         sessionId,
@@ -340,7 +350,7 @@ describe("Natural-language onboarding baseline (#70)", () => {
     }
   });
 
-  it("Fixture Journey 5: Session controls, Retry idempotency, Privacy baseline deletion, and Replay", async () => {
+  it("Fixture Journey 5: Repeated skip/resume, Retry idempotency, Baseline deletion, and Replay", async () => {
     const store = new SqliteEventStore(":memory:");
     try {
       const bus = new InProcessEventBus();
@@ -378,14 +388,22 @@ describe("Natural-language onboarding baseline (#70)", () => {
         now: NOW,
       });
 
-      // Test skip & resume
+      // Test repeated skip & resume cycles (sequence-aware event IDs)
       await engine.skipSession(sessionId, NOW);
       expect(host.state.sessions.get(sessionId)!.status).toBe("paused");
+      expect(host.state.sessions.get(sessionId)!.skipCount).toBe(1);
 
       await engine.resumeSession(sessionId, NOW);
       expect(host.state.sessions.get(sessionId)!.status).toBe("active");
+      expect(host.state.sessions.get(sessionId)!.resumeCount).toBe(1);
 
-      // Retry statement recording idempotency
+      await engine.skipSession(sessionId, NOW);
+      expect(host.state.sessions.get(sessionId)!.skipCount).toBe(2);
+
+      await engine.resumeSession(sessionId, NOW);
+      expect(host.state.sessions.get(sessionId)!.resumeCount).toBe(2);
+
+      // Retry recordStatement idempotency
       const res1 = await engine.recordStatement({
         sessionId,
         questionId,
@@ -393,16 +411,18 @@ describe("Natural-language onboarding baseline (#70)", () => {
         now: NOW,
       });
 
-      // Retrying recordStatement with same arguments should be idempotent
+      // Retrying recordStatement with different rawText on answered question returns existing statement
       const res2 = await engine.recordStatement({
         sessionId,
         questionId,
-        rawText: "I spend most of my time writing code.",
+        rawText: "Different text provided on retry",
         now: NOW,
       });
 
       expect(res1.statementId).toBe(res2.statementId);
+      expect(res1.statementEnvelopeId).toBe(res2.statementEnvelopeId);
       expect(res1.proposedBeliefs).toHaveLength(1);
+      expect(res2.proposedBeliefs).toEqual(res1.proposedBeliefs);
 
       const b = res1.proposedBeliefs[0]!;
       await engine.confirmBelief({ sessionId, beliefId: b.beliefId, now: NOW });
@@ -418,7 +438,7 @@ describe("Natural-language onboarding baseline (#70)", () => {
       expect(deletedState.isBaselineDeleted).toBe(true);
       expect(deletedState.baselineSummary).toBeUndefined();
 
-      // Test Replay parity without re-running extractor
+      // Test Replay parity
       const replayedHost = new ProjectionHost(onboardingProjection);
       const replayedRuntime = new OrionRuntime({
         bus: new InProcessEventBus(),
@@ -434,49 +454,266 @@ describe("Natural-language onboarding baseline (#70)", () => {
     }
   });
 
-  it("Two-stage policy gate drops prohibited categories/keywords and validates evidence substring", () => {
-    const gate = new DeterministicPolicyGate({
-      prohibitedCategories: new Set(["routines"]),
-    });
+  it("Opt-in Consent & Policy Gate blocks unconsented categories completely before extraction payload", async () => {
+    const store = new SqliteEventStore(":memory:");
+    try {
+      const bus = new InProcessEventBus();
+      const host = new ProjectionHost(onboardingProjection);
+      const runtime = new OrionRuntime({
+        bus,
+        store,
+        projections: [host as ProjectionHost<unknown>],
+      });
 
-    const req = {
-      currentQuestion: "What is important to you?",
-      currentStatement: "I love reading books in the evening.",
-      currentStatementEnvelopeId: "evt_1",
-      priorTurns: [],
+      const extractor = new ScriptedBeliefExtractor([
+        {
+          pattern: /daily routine/i,
+          proposals: [
+            {
+              subject: "routine",
+              claim: "Morning routine at 6 AM",
+              category: "routines",
+              temporalScope: "current",
+              evidenceText: "daily routine",
+              confidence: 0.9,
+            },
+          ],
+        },
+      ]);
+
+      // Unconsented policy gate (routines requires opt-in consent, not granted)
+      const unconsentedGate = new DeterministicPolicyGate({
+        optInCategories: new Set(["routines"]),
+        grantedConsentCategories: new Set(),
+      });
+
+      const engine = new OnboardingEngine({
+        runtime,
+        extractor,
+        policyGate: unconsentedGate,
+        getProjectionState: () => host.state,
+      });
+
+      const { sessionId, questionId } = await engine.startSession({
+        sessionId: "sess_opt_1",
+        now: NOW,
+      });
+
+      const { proposedBeliefs } = await engine.recordStatement({
+        sessionId,
+        questionId,
+        rawText: "My daily routine starts at 6 AM.",
+        now: NOW,
+      });
+
+      // No candidate or belief proposal payload exists before consent!
+      expect(proposedBeliefs).toHaveLength(0);
+      expect(host.state.sessions.get(sessionId)!.beliefs.size).toBe(0);
+
+      // Now grant consent
+      const consentedGate = new DeterministicPolicyGate({
+        optInCategories: new Set(["routines"]),
+        grantedConsentCategories: new Set(["routines"]),
+      });
+
+      const consentedEngine = new OnboardingEngine({
+        runtime,
+        extractor,
+        policyGate: consentedGate,
+        getProjectionState: () => host.state,
+      });
+
+      const { sessionId: s2, questionId: q2 } = await consentedEngine.startSession({
+        sessionId: "sess_opt_2",
+        now: NOW,
+      });
+
+      const { proposedBeliefs: consentedBeliefs } = await consentedEngine.recordStatement({
+        sessionId: s2,
+        questionId: q2,
+        rawText: "My daily routine starts at 6 AM.",
+        now: NOW,
+      });
+
+      expect(consentedBeliefs).toHaveLength(1);
+      expect(consentedBeliefs[0]!.categoryPolicy).toBe("opt_in");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("Restart and Reset Journeys", async () => {
+    const store = new SqliteEventStore(":memory:");
+    try {
+      const bus = new InProcessEventBus();
+      const host = new ProjectionHost(onboardingProjection);
+      const runtime = new OrionRuntime({
+        bus,
+        store,
+        projections: [host as ProjectionHost<unknown>],
+      });
+
+      const extractor = new ScriptedBeliefExtractor([]);
+      const engine = new OnboardingEngine({
+        runtime,
+        extractor,
+        getProjectionState: () => host.state,
+      });
+
+      // Test Restart Session
+      const { sessionId: s1, questionId: q1 } = await engine.startSession({
+        sessionId: "sess_restart_old",
+        now: NOW,
+      });
+
+      await engine.recordStatement({
+        sessionId: s1,
+        questionId: q1,
+        rawText: "Initial statement",
+        now: NOW,
+      });
+
+      const restartRes1 = await engine.restartSession(s1, NOW);
+      expect(restartRes1.newSessionId).toBe("sess_restart_old_restarted");
+      expect(host.state.sessions.get(s1)!.status).toBe("abandoned");
+      expect(host.state.sessions.get(restartRes1.newSessionId)!.status).toBe("active");
+
+      // Retrying restartSession returns existing restarted session
+      const restartRes2 = await engine.restartSession(s1, NOW);
+      expect(restartRes2.newSessionId).toBe(restartRes1.newSessionId);
+
+      // Test Reset Session
+      const resetRes = await engine.resetSession(restartRes1.newSessionId, NOW);
+      expect(resetRes.questionId).toBe("q_sess_restart_old_restarted_1_reset_1");
+
+      const resetSessionState = host.state.sessions.get(restartRes1.newSessionId)!;
+      expect(resetSessionState.turns).toHaveLength(1);
+      expect(resetSessionState.turns[0]!.questionId).toBe(resetRes.questionId);
+      expect(resetSessionState.beliefs.size).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("State Transition Invariants and Command Preconditions", async () => {
+    const store = new SqliteEventStore(":memory:");
+    try {
+      const bus = new InProcessEventBus();
+      const host = new ProjectionHost(onboardingProjection);
+      const runtime = new OrionRuntime({
+        bus,
+        store,
+        projections: [host as ProjectionHost<unknown>],
+      });
+
+      const extractor = new ScriptedBeliefExtractor([
+        {
+          pattern: /project/i,
+          proposals: [
+            {
+              subject: "project",
+              claim: "Active project",
+              category: "goals",
+              temporalScope: "current",
+              evidenceText: "project",
+              confidence: 0.9,
+            },
+          ],
+        },
+      ]);
+
+      const engine = new OnboardingEngine({
+        runtime,
+        extractor,
+        getProjectionState: () => host.state,
+      });
+
+      const { sessionId, questionId } = await engine.startSession({
+        sessionId: "sess_invariants_1",
+        now: NOW,
+      });
+
+      const { proposedBeliefs } = await engine.recordStatement({
+        sessionId,
+        questionId,
+        rawText: "I am working on my project.",
+        now: NOW,
+      });
+
+      const b = proposedBeliefs[0]!;
+
+      // Confirm belief
+      await engine.confirmBelief({ sessionId, beliefId: b.beliefId, now: NOW });
+
+      // Rejecting a confirmed belief is invalid and returns false
+      const rejectConfirmed = await engine.rejectBelief({
+        sessionId,
+        beliefId: b.beliefId,
+        now: NOW,
+      });
+      expect(rejectConfirmed).toBe(false);
+
+      // Establish baseline
+      await engine.establishBaseline({ sessionId, now: NOW });
+
+      // After baseline establishment, confirm/correct/reject operations are rejected
+      const confirmPostBase = await engine.confirmBelief({
+        sessionId,
+        beliefId: b.beliefId,
+        now: NOW,
+      });
+      expect(confirmPostBase).toBe(false);
+
+      await expect(
+        engine.correctBelief({
+          sessionId,
+          oldBeliefId: b.beliefId,
+          rawCorrectionText: "Correction text",
+          correctedClaim: "New claim",
+          correctedSubject: "new_subj",
+          correctedCategory: "goals",
+          now: NOW,
+        }),
+      ).rejects.toThrow();
+
+      // Establishing baseline again on completed session is idempotent
+      const baseAgain = await engine.establishBaseline({ sessionId, now: NOW });
+      expect(baseAgain.confirmedBeliefIds).toEqual([b.beliefId]);
+
+      // Establishing baseline on a paused session throws error
+      const { sessionId: sPaused } = await engine.startSession({
+        sessionId: "sess_paused_base",
+        now: NOW,
+      });
+      await engine.skipSession(sPaused, NOW);
+      await expect(engine.establishBaseline({ sessionId: sPaused, now: NOW })).rejects.toThrow();
+
+      // Restarting or resetting a completed session throws error
+      await expect(engine.restartSession(sessionId, NOW)).rejects.toThrow();
+      await expect(engine.resetSession(sessionId, NOW)).rejects.toThrow();
+    } finally {
+      store.close();
+    }
+  });
+
+  it("Narrows evidence provenance sourceEventIds to turns where evidenceText appears", () => {
+    const request: ExtractionRequest = {
+      currentQuestion: "Question 2",
+      currentStatement: "I am focused on my career.",
+      currentStatementEnvelopeId: "evt_stmt_turn2",
+      priorTurns: [
+        {
+          question: "Question 1",
+          statement: "My family is my top priority.",
+          statementEnvelopeId: "evt_stmt_turn1",
+        },
+      ],
     };
 
-    const prohibitedCandidate: CandidateBeliefProposal = {
-      subject: "reading",
-      claim: "Reading routines",
-      category: "routines",
-      temporalScope: "current",
-      evidenceText: "reading books",
-      confidence: 0.9,
-    };
+    const careerSourceIds = determineSourceEventIds("career", request);
+    expect(careerSourceIds).toEqual(["evt_stmt_turn2"]); // Only turn 2!
 
-    expect(gate.validateCandidate(prohibitedCandidate, req).valid).toBe(false);
-
-    const invalidEvidenceCandidate: CandidateBeliefProposal = {
-      subject: "sports",
-      claim: "Playing soccer",
-      category: "priorities",
-      temporalScope: "current",
-      evidenceText: "playing soccer on weekends", // Not in statement!
-      confidence: 0.9,
-    };
-
-    expect(gate.validateCandidate(invalidEvidenceCandidate, req).valid).toBe(false);
-
-    const validCandidate: CandidateBeliefProposal = {
-      subject: "books",
-      claim: "Reading books",
-      category: "values",
-      temporalScope: "durable",
-      evidenceText: "reading books",
-      confidence: 0.9,
-    };
-
-    expect(gate.validateCandidate(validCandidate, req).valid).toBe(true);
+    const familySourceIds = determineSourceEventIds("family", request);
+    expect(familySourceIds).toEqual(["evt_stmt_turn1"]); // Only turn 1!
   });
 });

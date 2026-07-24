@@ -370,6 +370,7 @@ export interface UserBeliefCorrectedPayload {
   readonly correctedSubject: string;
   readonly correctedCategory: BeliefCategory;
   readonly correctedTemporalScope: BeliefTemporalScope;
+  readonly categoryPolicy: "allowed" | "confirmation_required" | "opt_in";
   readonly correctedAt: string;
 }
 

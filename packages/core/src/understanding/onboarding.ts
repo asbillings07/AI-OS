@@ -62,26 +62,25 @@ const PROHIBITED_PATTERN =
 
 export interface PolicyGateOptions {
   readonly optInCategories?: ReadonlySet<BeliefCategory>;
+  readonly grantedConsentCategories?: ReadonlySet<BeliefCategory>;
   readonly prohibitedCategories?: ReadonlySet<BeliefCategory>;
 }
 
 export class DeterministicPolicyGate {
   readonly #optInCategories: ReadonlySet<BeliefCategory>;
+  readonly #grantedConsentCategories: ReadonlySet<BeliefCategory>;
   readonly #prohibitedCategories: ReadonlySet<BeliefCategory>;
 
   constructor(options: PolicyGateOptions = {}) {
     this.#optInCategories = options.optInCategories ?? new Set();
+    this.#grantedConsentCategories = options.grantedConsentCategories ?? new Set();
     this.#prohibitedCategories = options.prohibitedCategories ?? new Set();
   }
 
   /**
-   * Pre-Extraction Gate: Checks whether extraction is allowed for a category and text.
-   * Returns false if the category is prohibited or if opt-in consent is required but not granted.
+   * Pre-Extraction Gate: Checks whether statement text contains prohibited terms.
    */
-  isExtractionAllowed(category: BeliefCategory, text: string): boolean {
-    if (this.#prohibitedCategories.has(category)) {
-      return false;
-    }
+  isExtractionAllowed(text: string): boolean {
     if (PROHIBITED_PATTERN.test(text)) {
       return false;
     }
@@ -90,18 +89,31 @@ export class DeterministicPolicyGate {
 
   /**
    * Post-Extraction Validation Gate:
-   * Validates evidence spans, assigns categoryPolicy ("allowed", "confirmation_required", or "opt_in"),
-   * and drops invalid or prohibited candidates.
+   * Validates evidence spans, drops unconsented opt-in categories or prohibited categories/content,
+   * and assigns categoryPolicy ("allowed", "confirmation_required", or "opt_in").
    */
   validateCandidate(
     candidate: CandidateBeliefProposal,
     request: ExtractionRequest,
   ): { readonly valid: boolean; readonly categoryPolicy?: "allowed" | "confirmation_required" | "opt_in" } {
+    // Prohibited category
     if (this.#prohibitedCategories.has(candidate.category)) {
       return { valid: false };
     }
 
-    if (PROHIBITED_PATTERN.test(candidate.claim) || PROHIBITED_PATTERN.test(candidate.evidenceText)) {
+    // Opt-in category without granted consent: DROP candidate entirely!
+    if (
+      this.#optInCategories.has(candidate.category) &&
+      !this.#grantedConsentCategories.has(candidate.category)
+    ) {
+      return { valid: false };
+    }
+
+    // Prohibited content in claim or evidence
+    if (
+      PROHIBITED_PATTERN.test(candidate.claim) ||
+      PROHIBITED_PATTERN.test(candidate.evidenceText)
+    ) {
       return { valid: false };
     }
 
@@ -124,10 +136,10 @@ export class DeterministicPolicyGate {
 
     let categoryPolicy: "allowed" | "confirmation_required" | "opt_in" = "allowed";
 
-    if (this.#optInCategories.has(candidate.category)) {
-      categoryPolicy = "opt_in";
-    } else if (isSensitive) {
+    if (isSensitive) {
       categoryPolicy = "confirmation_required";
+    } else if (this.#optInCategories.has(candidate.category)) {
+      categoryPolicy = "opt_in";
     }
 
     return {
@@ -135,6 +147,75 @@ export class DeterministicPolicyGate {
       categoryPolicy,
     };
   }
+
+  /**
+   * Validates a proposed correction replacement against category policies and consent gates.
+   */
+  validateCorrection(
+    correctedCategory: BeliefCategory,
+    correctedClaim: string,
+    rawCorrectionText: string,
+  ): { readonly valid: boolean; readonly categoryPolicy?: "allowed" | "confirmation_required" | "opt_in" } {
+    if (this.#prohibitedCategories.has(correctedCategory)) {
+      return { valid: false };
+    }
+
+    if (
+      this.#optInCategories.has(correctedCategory) &&
+      !this.#grantedConsentCategories.has(correctedCategory)
+    ) {
+      return { valid: false };
+    }
+
+    if (
+      PROHIBITED_PATTERN.test(correctedClaim) ||
+      PROHIBITED_PATTERN.test(rawCorrectionText)
+    ) {
+      return { valid: false };
+    }
+
+    const isSensitive =
+      SENSITIVE_TOPIC_PATTERN.test(correctedClaim) ||
+      SENSITIVE_TOPIC_PATTERN.test(rawCorrectionText);
+
+    let categoryPolicy: "allowed" | "confirmation_required" | "opt_in" = "allowed";
+
+    if (isSensitive) {
+      categoryPolicy = "confirmation_required";
+    } else if (this.#optInCategories.has(correctedCategory)) {
+      categoryPolicy = "opt_in";
+    }
+
+    return {
+      valid: true,
+      categoryPolicy,
+    };
+  }
+}
+
+// ============================================================================
+// Helper: Minimal Evidence Provenance (sourceEventIds)
+// ============================================================================
+
+export function determineSourceEventIds(
+  evidenceText: string,
+  request: ExtractionRequest,
+): readonly string[] {
+  const trimmed = evidenceText.trim();
+  const supportingIds: string[] = [];
+
+  for (const turn of request.priorTurns) {
+    if (turn.statement.includes(trimmed)) {
+      supportingIds.push(turn.statementEnvelopeId);
+    }
+  }
+  if (request.currentStatement.includes(trimmed)) {
+    supportingIds.push(request.currentStatementEnvelopeId);
+  }
+
+  return supportingIds.length > 0
+    ? supportingIds
+    : [request.currentStatementEnvelopeId];
 }
 
 // ============================================================================
@@ -212,6 +293,10 @@ export interface OnboardingSessionState {
   readonly baselineConfirmedBeliefIds?: readonly string[];
   readonly baselineSummary?: readonly string[];
   readonly isBaselineDeleted: boolean;
+  readonly restartedFromSessionId?: string;
+  readonly skipCount: number;
+  readonly resumeCount: number;
+  readonly resetCount: number;
 }
 
 export interface OnboardingState {
@@ -235,6 +320,9 @@ function foldStarted(state: OnboardingState, event: UserOnboardingStartedEvent):
     beliefs: new Map(),
     isBaselineEstablished: false,
     isBaselineDeleted: false,
+    skipCount: 0,
+    resumeCount: 0,
+    resetCount: 0,
   };
 
   const sessions = new Map(state.sessions);
@@ -360,10 +448,10 @@ function foldBeliefConfirmed(
 ): OnboardingState {
   const { sessionId, beliefId } = event.payload;
   const session = state.sessions.get(sessionId);
-  if (!session) return state;
+  if (!session || session.isBaselineEstablished) return state;
 
   const existing = session.beliefs.get(beliefId);
-  if (!existing || existing.status === "confirmed") return state;
+  if (!existing || existing.status !== "proposed") return state;
 
   const updatedBelief: OnboardingBeliefState = {
     ...existing,
@@ -397,13 +485,16 @@ function foldBeliefCorrected(
     correctedSubject,
     correctedCategory,
     correctedTemporalScope,
+    categoryPolicy,
   } = event.payload;
 
   const session = state.sessions.get(sessionId);
-  if (!session) return state;
+  if (!session || session.isBaselineEstablished) return state;
 
   const oldBelief = session.beliefs.get(oldBeliefId);
-  if (!oldBelief) return state;
+  if (!oldBelief || (oldBelief.status !== "proposed" && oldBelief.status !== "confirmed")) {
+    return state;
+  }
 
   const updatedOld: OnboardingBeliefState = {
     ...oldBelief,
@@ -423,7 +514,7 @@ function foldBeliefCorrected(
     verification: "user_confirmed",
     sourceEventIds: [...oldBelief.sourceEventIds, event.id],
     confidence: 1.0,
-    categoryPolicy: "allowed",
+    categoryPolicy: categoryPolicy ?? "allowed",
     status: "confirmed",
     correctedFromBeliefId: oldBeliefId,
     rawCorrectionText,
@@ -449,10 +540,10 @@ function foldBeliefRejected(
 ): OnboardingState {
   const { sessionId, beliefId } = event.payload;
   const session = state.sessions.get(sessionId);
-  if (!session) return state;
+  if (!session || session.isBaselineEstablished) return state;
 
   const existing = session.beliefs.get(beliefId);
-  if (!existing || existing.status === "rejected") return state;
+  if (!existing || existing.status !== "proposed") return state;
 
   const updated: OnboardingBeliefState = {
     ...existing,
@@ -478,7 +569,7 @@ function foldBaselineEstablished(
 ): OnboardingState {
   const { sessionId, confirmedBeliefIds, summary } = event.payload;
   const session = state.sessions.get(sessionId);
-  if (!session) return state;
+  if (!session || session.status !== "active" || session.isBaselineEstablished) return state;
 
   const updatedSession: OnboardingSessionState = {
     ...session,
@@ -501,6 +592,7 @@ function foldSkipped(state: OnboardingState, event: UserOnboardingSkippedEvent):
   const updatedSession: OnboardingSessionState = {
     ...session,
     status: "paused",
+    skipCount: session.skipCount + 1,
   };
 
   const sessions = new Map(state.sessions);
@@ -516,6 +608,7 @@ function foldResumed(state: OnboardingState, event: UserOnboardingResumedEvent):
   const updatedSession: OnboardingSessionState = {
     ...session,
     status: "active",
+    resumeCount: session.resumeCount + 1,
   };
 
   const sessions = new Map(state.sessions);
@@ -541,11 +634,15 @@ function foldRestarted(
 
   const newSession: OnboardingSessionState = {
     sessionId: newSessionId,
+    restartedFromSessionId: oldSessionId,
     status: "active",
     turns: [],
     beliefs: new Map(),
     isBaselineEstablished: false,
     isBaselineDeleted: false,
+    skipCount: 0,
+    resumeCount: 0,
+    resetCount: 0,
   };
 
   sessions.set(newSessionId, newSession);
@@ -555,12 +652,13 @@ function foldRestarted(
 function foldReset(state: OnboardingState, event: UserOnboardingResetEvent): OnboardingState {
   const { sessionId } = event.payload;
   const session = state.sessions.get(sessionId);
-  if (!session) return state;
+  if (!session || session.status === "completed") return state;
 
   const updatedSession: OnboardingSessionState = {
     ...session,
     turns: [],
     beliefs: new Map(),
+    resetCount: session.resetCount + 1,
   };
 
   const sessions = new Map(state.sessions);
@@ -648,7 +746,7 @@ export function formatBaselineSummary(
       case "values":
         return `${b.claim} is central right now.`;
       case "goals":
-        return `You are focused on ${b.claim.toLowerCase().replace(/^\b/, "")}.`;
+        return `You are focused on ${b.claim.toLowerCase()}.`;
       case "roles_and_relationships":
         return `Your role and key relationship focus: ${b.claim}.`;
       case "priorities":
@@ -701,6 +799,17 @@ export class OnboardingEngine {
     const questionId = `q_${sessionId}_1`;
     const occurredAt = options.now ?? new Date().toISOString();
 
+    const currentState = this.#getProjectionState();
+    const existingSession = currentState.sessions.get(sessionId);
+    if (existingSession && existingSession.turns.length > 0) {
+      const firstTurn = existingSession.turns[0]!;
+      return {
+        sessionId,
+        questionId: firstTurn.questionId,
+        questionText: firstTurn.questionText,
+      };
+    }
+
     await this.#runtime.recordExclusive(() => {
       const state = this.#getProjectionState();
       if (state.sessions.has(sessionId)) return null;
@@ -752,17 +861,42 @@ export class OnboardingEngine {
     readonly proposedBeliefs: readonly OnboardingBeliefState[];
   }> {
     const { sessionId, questionId, rawText } = options;
-    const statementId = `stmt_${sessionId}_${questionId}`;
     const occurredAt = options.now ?? new Date().toISOString();
-    let statementEnvelopeId = `evt_stmt_${statementId}`;
+
+    const initialState = this.#getProjectionState();
+    const initialSession = initialState.sessions.get(sessionId);
+
+    if (!initialSession || initialSession.status !== "active" || initialSession.isBaselineEstablished) {
+      throw new Error(`Cannot record statement: session ${sessionId} is not active or baseline is established`);
+    }
+
+    const turn = initialSession.turns.find((t) => t.questionId === questionId);
+    if (!turn) {
+      throw new Error(`Question ${questionId} not found in session ${sessionId}`);
+    }
+
+    // Command Idempotency check: if statement already recorded for this question
+    if (turn.statementId && turn.statementEnvelopeId) {
+      const existingProposals = Array.from(initialSession.beliefs.values()).filter(
+        (b) => b.statementEnvelopeId === turn.statementEnvelopeId,
+      );
+      return {
+        statementId: turn.statementId,
+        statementEnvelopeId: turn.statementEnvelopeId,
+        proposedBeliefs: existingProposals,
+      };
+    }
+
+    const statementId = `stmt_${sessionId}_${questionId}`;
+    const statementEnvelopeId = `evt_stmt_${statementId}`;
 
     await this.#runtime.recordExclusive(() => {
       const state = this.#getProjectionState();
       const session = state.sessions.get(sessionId);
       if (!session || session.status !== "active") return null;
 
-      const turn = session.turns.find((t) => t.questionId === questionId);
-      if (!turn || turn.statementId) return null;
+      const currentTurn = session.turns.find((t) => t.questionId === questionId);
+      if (!currentTurn || currentTurn.statementId) return null;
 
       const stmtEvent = makeEvent({
         id: statementEnvelopeId,
@@ -784,9 +918,6 @@ export class OnboardingEngine {
     const stateAfterStmt = this.#getProjectionState();
     const sessionAfterStmt = stateAfterStmt.sessions.get(sessionId)!;
     const currentTurn = sessionAfterStmt.turns.find((t) => t.questionId === questionId)!;
-    if (currentTurn.statementEnvelopeId) {
-      statementEnvelopeId = currentTurn.statementEnvelopeId;
-    }
 
     const priorTurns: ExtractionTurn[] = sessionAfterStmt.turns
       .filter((t) => t.questionId !== questionId && t.statementEnvelopeId && t.rawStatementText)
@@ -796,11 +927,6 @@ export class OnboardingEngine {
         statementEnvelopeId: t.statementEnvelopeId!,
       }));
 
-    const sourceEventIds = [
-      ...priorTurns.map((t) => t.statementEnvelopeId),
-      statementEnvelopeId,
-    ];
-
     const extractionRequest: ExtractionRequest = {
       currentQuestion: currentTurn.questionText,
       currentStatement: rawText,
@@ -809,8 +935,7 @@ export class OnboardingEngine {
     };
 
     // Pre-extraction gate check
-    const isAllowed = this.#policyGate.isExtractionAllowed("values", rawText);
-    const proposedBeliefs: OnboardingBeliefState[] = [];
+    const isAllowed = this.#policyGate.isExtractionAllowed(rawText);
 
     if (isAllowed) {
       const candidates = await this.#extractor.extractCandidates(extractionRequest);
@@ -820,11 +945,12 @@ export class OnboardingEngine {
         const validation = this.#policyGate.validateCandidate(candidate, extractionRequest);
 
         if (!validation.valid || !validation.categoryPolicy) {
-          continue; // Prohibited or invalid candidate dropped
+          continue; // Prohibited or unconsented candidate dropped
         }
 
         const candidateHash = candidate.claim.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 30);
         const beliefId = `belief_${sessionId}_${statementId}_${i}_${candidateHash}`;
+        const sourceEventIds = determineSourceEventIds(candidate.evidenceText, extractionRequest);
 
         await this.#runtime.recordExclusive(() => {
           const s = this.#getProjectionState();
@@ -885,8 +1011,14 @@ export class OnboardingEngine {
 
     const state = this.#getProjectionState();
     const session = state.sessions.get(sessionId);
-    if (!session || session.status !== "active") {
-      throw new Error(`Cannot ask follow-up: session ${sessionId} is not active`);
+    if (!session || session.status !== "active" || session.isBaselineEstablished) {
+      throw new Error(`Cannot ask follow-up: session ${sessionId} is not active or baseline is established`);
+    }
+
+    // Idempotency check: if last question is unanswered and has same question text, return it
+    const lastTurn = session.turns[session.turns.length - 1];
+    if (lastTurn && !lastTurn.statementId && lastTurn.questionText === questionText) {
+      return { questionId: lastTurn.questionId, text: lastTurn.questionText };
     }
 
     const ordinal = session.turns.length + 1;
@@ -932,13 +1064,26 @@ export class OnboardingEngine {
     const statementId = `stmt_${sessionId}_${questionId}`;
     const occurredAt = options.now ?? new Date().toISOString();
 
+    const initialState = this.#getProjectionState();
+    const initialSession = initialState.sessions.get(sessionId);
+    if (!initialSession || initialSession.status !== "active" || initialSession.isBaselineEstablished) {
+      throw new Error(`Cannot handle uncertainty: session ${sessionId} is not active or baseline established`);
+    }
+
+    const turn = initialSession.turns.find((t) => t.questionId === questionId);
+    if (!turn) throw new Error(`Question ${questionId} not found in session ${sessionId}`);
+
+    if (turn.statementId) {
+      return { statementId: turn.statementId };
+    }
+
     await this.#runtime.recordExclusive(() => {
       const state = this.#getProjectionState();
       const session = state.sessions.get(sessionId);
       if (!session || session.status !== "active") return null;
 
-      const turn = session.turns.find((t) => t.questionId === questionId);
-      if (!turn || turn.statementId) return null;
+      const t = session.turns.find((turnItem) => turnItem.questionId === questionId);
+      if (!t || t.statementId) return null;
 
       const stmtEvent = makeEvent({
         id: `evt_stmt_${statementId}`,
@@ -956,6 +1101,22 @@ export class OnboardingEngine {
       return stmtEvent;
     });
 
+    // Move session to paused state when uncertainty is stated
+    await this.#runtime.recordExclusive(() => {
+      const state = this.#getProjectionState();
+      const session = state.sessions.get(sessionId);
+      if (!session || session.status !== "active") return null;
+
+      const skipEvent = makeEvent({
+        id: `evt_skip_${sessionId}_${session.skipCount + 1}`,
+        type: EventTypes.UserOnboardingSkipped,
+        source: "orion",
+        occurredAt,
+        payload: { sessionId, skippedAt: occurredAt },
+      });
+      return skipEvent;
+    });
+
     return { statementId };
   }
 
@@ -967,13 +1128,24 @@ export class OnboardingEngine {
     const { sessionId, beliefId } = options;
     const occurredAt = options.now ?? new Date().toISOString();
 
-    return this.#runtime.recordExclusive(() => {
-      const state = this.#getProjectionState();
-      const session = state.sessions.get(sessionId);
-      if (!session) return null;
+    const state = this.#getProjectionState();
+    const session = state.sessions.get(sessionId);
+    if (!session || session.status !== "active" || session.isBaselineEstablished) {
+      return false;
+    }
 
-      const belief = session.beliefs.get(beliefId);
-      if (!belief || belief.status === "confirmed" || belief.status === "superseded") return null;
+    const belief = session.beliefs.get(beliefId);
+    if (!belief) return false;
+    if (belief.status === "confirmed") return true; // Idempotent return
+    if (belief.status !== "proposed") return false; // Cannot confirm rejected/superseded
+
+    return this.#runtime.recordExclusive(() => {
+      const s = this.#getProjectionState();
+      const sess = s.sessions.get(sessionId);
+      if (!sess || sess.status !== "active" || sess.isBaselineEstablished) return null;
+
+      const b = sess.beliefs.get(beliefId);
+      if (!b || b.status !== "proposed") return null;
 
       const confirmEvent = makeEvent({
         id: `evt_conf_${beliefId}`,
@@ -1011,15 +1183,52 @@ export class OnboardingEngine {
     } = options;
 
     const occurredAt = options.now ?? new Date().toISOString();
-    const newBeliefId = `belief_corr_${sessionId}_${oldBeliefId}_${Date.now()}`;
+
+    const state = this.#getProjectionState();
+    const session = state.sessions.get(sessionId);
+    if (!session || session.status !== "active" || session.isBaselineEstablished) {
+      throw new Error(`Cannot correct belief: session ${sessionId} is not active or baseline is established`);
+    }
+
+    const oldBelief = session.beliefs.get(oldBeliefId);
+    if (!oldBelief) {
+      throw new Error(`Belief ${oldBeliefId} not found in session ${sessionId}`);
+    }
+
+    // Idempotency check: if oldBelief is already superseded, find existing replacement belief!
+    if (oldBelief.status === "superseded") {
+      const existingReplacement = Array.from(session.beliefs.values()).find(
+        (b) => b.correctedFromBeliefId === oldBeliefId,
+      );
+      if (existingReplacement) {
+        return { newBeliefId: existingReplacement.beliefId };
+      }
+    }
+
+    if (oldBelief.status !== "proposed" && oldBelief.status !== "confirmed") {
+      throw new Error(`Cannot correct belief in status '${oldBelief.status}'`);
+    }
+
+    // Validate replacement against Policy Gate
+    const policyValidation = this.#policyGate.validateCorrection(
+      correctedCategory,
+      correctedClaim,
+      rawCorrectionText,
+    );
+
+    if (!policyValidation.valid || !policyValidation.categoryPolicy) {
+      throw new Error(`Correction violates category policy gate or opt-in consent`);
+    }
+
+    const newBeliefId = `belief_corr_${sessionId}_${oldBeliefId}`;
 
     await this.#runtime.recordExclusive(() => {
-      const state = this.#getProjectionState();
-      const session = state.sessions.get(sessionId);
-      if (!session) return null;
+      const s = this.#getProjectionState();
+      const sess = s.sessions.get(sessionId);
+      if (!sess || sess.status !== "active" || sess.isBaselineEstablished) return null;
 
-      const oldBelief = session.beliefs.get(oldBeliefId);
-      if (!oldBelief || oldBelief.status === "superseded") return null;
+      const ob = sess.beliefs.get(oldBeliefId);
+      if (!ob || (ob.status !== "proposed" && ob.status !== "confirmed")) return null;
 
       const correctedEvent = makeEvent({
         id: `evt_corr_${newBeliefId}`,
@@ -1035,6 +1244,7 @@ export class OnboardingEngine {
           correctedSubject,
           correctedCategory,
           correctedTemporalScope,
+          categoryPolicy: policyValidation.categoryPolicy,
           correctedAt: occurredAt,
         },
       });
@@ -1053,13 +1263,24 @@ export class OnboardingEngine {
     const { sessionId, beliefId, reason } = options;
     const occurredAt = options.now ?? new Date().toISOString();
 
-    return this.#runtime.recordExclusive(() => {
-      const state = this.#getProjectionState();
-      const session = state.sessions.get(sessionId);
-      if (!session) return null;
+    const state = this.#getProjectionState();
+    const session = state.sessions.get(sessionId);
+    if (!session || session.status !== "active" || session.isBaselineEstablished) {
+      return false;
+    }
 
-      const belief = session.beliefs.get(beliefId);
-      if (!belief || belief.status === "rejected" || belief.status === "superseded") return null;
+    const belief = session.beliefs.get(beliefId);
+    if (!belief) return false;
+    if (belief.status === "rejected") return true; // Idempotent return
+    if (belief.status !== "proposed") return false; // Cannot reject confirmed/superseded
+
+    return this.#runtime.recordExclusive(() => {
+      const s = this.#getProjectionState();
+      const sess = s.sessions.get(sessionId);
+      if (!sess || sess.status !== "active" || sess.isBaselineEstablished) return null;
+
+      const b = sess.beliefs.get(beliefId);
+      if (!b || b.status !== "proposed") return null;
 
       const rejectEvent = makeEvent({
         id: `evt_rej_${beliefId}`,
@@ -1084,15 +1305,33 @@ export class OnboardingEngine {
     const { sessionId } = options;
     const occurredAt = options.now ?? new Date().toISOString();
 
+    const state = this.#getProjectionState();
+    const session = state.sessions.get(sessionId);
+
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found`);
+    }
+
+    if (session.isBaselineEstablished) {
+      return {
+        summary: session.baselineSummary!,
+        confirmedBeliefIds: session.baselineConfirmedBeliefIds!,
+      };
+    }
+
+    if (session.status !== "active") {
+      throw new Error(`Cannot establish baseline on session in status '${session.status}'`);
+    }
+
     let summary: readonly string[] = [];
     let confirmedBeliefIds: readonly string[] = [];
 
     await this.#runtime.recordExclusive(() => {
-      const state = this.#getProjectionState();
-      const session = state.sessions.get(sessionId);
-      if (!session || session.isBaselineEstablished) return null;
+      const s = this.#getProjectionState();
+      const sess = s.sessions.get(sessionId);
+      if (!sess || sess.status !== "active" || sess.isBaselineEstablished) return null;
 
-      const confirmedBeliefs = Array.from(session.beliefs.values()).filter(
+      const confirmedBeliefs = Array.from(sess.beliefs.values()).filter(
         (b) => b.status === "confirmed",
       );
 
@@ -1119,13 +1358,21 @@ export class OnboardingEngine {
 
   async skipSession(sessionId: string, now?: string): Promise<boolean> {
     const occurredAt = now ?? new Date().toISOString();
+
+    const state = this.#getProjectionState();
+    const session = state.sessions.get(sessionId);
+    if (!session || session.isBaselineEstablished) return false;
+
+    if (session.status === "paused") return true; // Idempotent return
+    if (session.status !== "active") return false;
+
     return this.#runtime.recordExclusive(() => {
-      const state = this.#getProjectionState();
-      const session = state.sessions.get(sessionId);
-      if (!session || session.status !== "active") return null;
+      const s = this.#getProjectionState();
+      const sess = s.sessions.get(sessionId);
+      if (!sess || sess.status !== "active" || sess.isBaselineEstablished) return null;
 
       const skipEvent = makeEvent({
-        id: `evt_skip_${sessionId}`,
+        id: `evt_skip_${sessionId}_${sess.skipCount + 1}`,
         type: EventTypes.UserOnboardingSkipped,
         source: "orion",
         occurredAt,
@@ -1137,13 +1384,21 @@ export class OnboardingEngine {
 
   async resumeSession(sessionId: string, now?: string): Promise<boolean> {
     const occurredAt = now ?? new Date().toISOString();
+
+    const state = this.#getProjectionState();
+    const session = state.sessions.get(sessionId);
+    if (!session || session.isBaselineEstablished) return false;
+
+    if (session.status === "active") return true; // Idempotent return
+    if (session.status !== "paused") return false;
+
     return this.#runtime.recordExclusive(() => {
-      const state = this.#getProjectionState();
-      const session = state.sessions.get(sessionId);
-      if (!session || session.status !== "paused") return null;
+      const s = this.#getProjectionState();
+      const sess = s.sessions.get(sessionId);
+      if (!sess || sess.status !== "paused" || sess.isBaselineEstablished) return null;
 
       const resumeEvent = makeEvent({
-        id: `evt_res_${sessionId}`,
+        id: `evt_res_${sessionId}_${sess.resumeCount + 1}`,
         type: EventTypes.UserOnboardingResumed,
         source: "orion",
         occurredAt,
@@ -1158,14 +1413,37 @@ export class OnboardingEngine {
     now?: string,
   ): Promise<{ readonly newSessionId: string; readonly questionId: string; readonly questionText: string }> {
     const occurredAt = now ?? new Date().toISOString();
-    const newSessionId = `session_restarted_${Date.now()}`;
+
+    const state = this.#getProjectionState();
+    const oldSession = state.sessions.get(oldSessionId);
+
+    if (!oldSession || oldSession.status === "completed") {
+      throw new Error(`Cannot restart session ${oldSessionId}: session does not exist or is completed`);
+    }
+
+    // Idempotency check: if old session is already abandoned, return existing restarted session
+    if (oldSession.status === "abandoned") {
+      const existingRestarted = Array.from(state.sessions.values()).find(
+        (s) => s.restartedFromSessionId === oldSessionId,
+      );
+      if (existingRestarted && existingRestarted.turns.length > 0) {
+        const firstTurn = existingRestarted.turns[0]!;
+        return {
+          newSessionId: existingRestarted.sessionId,
+          questionId: firstTurn.questionId,
+          questionText: firstTurn.questionText,
+        };
+      }
+    }
+
+    const newSessionId = `${oldSessionId}_restarted`;
     const questionText = "What is important to you?";
     const questionId = `q_${newSessionId}_1`;
 
     await this.#runtime.recordExclusive(() => {
-      const state = this.#getProjectionState();
-      const oldSession = state.sessions.get(oldSessionId);
-      if (!oldSession) return null;
+      const s = this.#getProjectionState();
+      const os = s.sessions.get(oldSessionId);
+      if (!os || os.status === "completed" || os.status === "abandoned") return null;
 
       const restartEvent = makeEvent({
         id: `evt_restrt_${oldSessionId}`,
@@ -1182,9 +1460,9 @@ export class OnboardingEngine {
     });
 
     await this.#runtime.recordExclusive(() => {
-      const state = this.#getProjectionState();
-      const newSession = state.sessions.get(newSessionId);
-      if (!newSession || newSession.turns.some((t) => t.questionId === questionId)) return null;
+      const s = this.#getProjectionState();
+      const ns = s.sessions.get(newSessionId);
+      if (!ns || ns.turns.some((t) => t.questionId === questionId)) return null;
 
       const askedEvent = makeEvent({
         id: `evt_ask_${questionId}`,
@@ -1207,15 +1485,30 @@ export class OnboardingEngine {
     return { newSessionId, questionId, questionText };
   }
 
-  async resetSession(sessionId: string, now?: string): Promise<boolean> {
+  async resetSession(
+    sessionId: string,
+    now?: string,
+  ): Promise<{ readonly questionId: string; readonly questionText: string }> {
     const occurredAt = now ?? new Date().toISOString();
-    return this.#runtime.recordExclusive(() => {
-      const state = this.#getProjectionState();
-      const session = state.sessions.get(sessionId);
-      if (!session) return null;
+
+    const state = this.#getProjectionState();
+    const session = state.sessions.get(sessionId);
+
+    if (!session || session.status === "completed") {
+      throw new Error(`Cannot reset session ${sessionId}: session does not exist or is completed`);
+    }
+
+    const newResetCount = session.resetCount + 1;
+    const questionText = "What is important to you?";
+    const questionId = `q_${sessionId}_1_reset_${newResetCount}`;
+
+    await this.#runtime.recordExclusive(() => {
+      const s = this.#getProjectionState();
+      const sess = s.sessions.get(sessionId);
+      if (!sess || sess.status === "completed") return null;
 
       const resetEvent = makeEvent({
-        id: `evt_reset_${sessionId}`,
+        id: `evt_reset_${sessionId}_${newResetCount}`,
         type: EventTypes.UserOnboardingReset,
         source: "orion",
         occurredAt,
@@ -1223,6 +1516,31 @@ export class OnboardingEngine {
       });
       return resetEvent;
     });
+
+    await this.#runtime.recordExclusive(() => {
+      const s = this.#getProjectionState();
+      const sess = s.sessions.get(sessionId);
+      if (!sess || sess.turns.some((t) => t.questionId === questionId)) return null;
+
+      const askedEvent = makeEvent({
+        id: `evt_ask_${questionId}`,
+        type: EventTypes.UserOnboardingQuestionAsked,
+        source: "orion",
+        occurredAt,
+        payload: {
+          questionId,
+          sessionId,
+          kind: "opening",
+          text: questionText,
+          ordinal: 1,
+          mechanismVersion: "v0.1",
+          askedAt: occurredAt,
+        },
+      });
+      return askedEvent;
+    });
+
+    return { questionId, questionText };
   }
 
   async deleteBaseline(
@@ -1231,10 +1549,15 @@ export class OnboardingEngine {
     now?: string,
   ): Promise<boolean> {
     const occurredAt = now ?? new Date().toISOString();
+
+    const state = this.#getProjectionState();
+    const session = state.sessions.get(sessionId);
+    if (!session || !session.isBaselineEstablished) return false;
+
     return this.#runtime.recordExclusive(() => {
-      const state = this.#getProjectionState();
-      const session = state.sessions.get(sessionId);
-      if (!session || !session.isBaselineEstablished) return null;
+      const s = this.#getProjectionState();
+      const sess = s.sessions.get(sessionId);
+      if (!sess || !sess.isBaselineEstablished) return null;
 
       const delEvent = makeEvent({
         id: `evt_del_base_${sessionId}`,
@@ -1247,4 +1570,3 @@ export class OnboardingEngine {
     });
   }
 }
-
