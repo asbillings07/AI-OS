@@ -366,19 +366,25 @@ describe("Natural-language onboarding baseline (#70)", () => {
       const mockExtractor: BeliefExtractor = {
         async extractCandidates(request: ExtractionRequest) {
           capturedEligibleCategories = new Set(request.eligibleCategories);
-          return [
-            {
-              subject: "routine",
-              claim: "Morning routine at 6 AM",
-              category: "routines",
-              temporalScope: "current",
-              evidenceText: "daily routine",
-              supportingEvidence: [
-                { statementEnvelopeId: request.currentStatementEnvelopeId, evidenceText: "daily routine" },
-              ],
-              confidence: 0.9,
+          return {
+            candidates: [
+              {
+                subject: "routine",
+                claim: "Morning routine at 6 AM",
+                category: "routines",
+                temporalScope: "current",
+                evidenceText: "daily routine",
+                supportingEvidence: [
+                  { statementEnvelopeId: request.currentStatementEnvelopeId, evidenceText: "daily routine" },
+                ],
+                confidence: 0.9,
+              },
+            ],
+            metadata: {
+              inferenceMechanism: "mock",
+              promptSchemaVersion: "v0.1",
             },
-          ];
+          };
         },
       };
 
@@ -470,19 +476,25 @@ describe("Natural-language onboarding baseline (#70)", () => {
             throwCount++;
             throw new Error("Simulated extraction crash after statement recording!");
           }
-          return [
-            {
-              subject: "coding",
-              claim: "Building software",
-              category: "goals",
-              temporalScope: "current",
-              evidenceText: "writing code",
-              supportingEvidence: [
-                { statementEnvelopeId: request.currentStatementEnvelopeId, evidenceText: "writing code" },
-              ],
-              confidence: 0.9,
+          return {
+            candidates: [
+              {
+                subject: "coding",
+                claim: "Building software",
+                category: "goals",
+                temporalScope: "current",
+                evidenceText: "writing code",
+                supportingEvidence: [
+                  { statementEnvelopeId: request.currentStatementEnvelopeId, evidenceText: "writing code" },
+                ],
+                confidence: 0.9,
+              },
+            ],
+            metadata: {
+              inferenceMechanism: "mock",
+              promptSchemaVersion: "v0.1",
             },
-          ];
+          };
         },
       };
 
@@ -706,10 +718,32 @@ describe("Natural-language onboarding baseline (#70)", () => {
         async extractCandidates(request: ExtractionRequest) {
           extractCallCount++;
           if (extractCallCount === 1) {
-            return [
+            return {
+              candidates: [
+                {
+                  subject: "health",
+                  claim: "Daily workout",
+                  category: "routines",
+                  temporalScope: "current",
+                  evidenceText: "working out daily",
+                  supportingEvidence: [
+                    { statementEnvelopeId: request.currentStatementEnvelopeId, evidenceText: "working out daily" },
+                  ],
+                  confidence: 0.8,
+                },
+              ],
+              metadata: {
+                inferenceMechanism: "mock",
+                promptSchemaVersion: "v0.1",
+              },
+            };
+          }
+          // Nondeterministic second call produces different candidate!
+          return {
+            candidates: [
               {
-                subject: "health",
-                claim: "Daily workout",
+                subject: "diet",
+                claim: "Eating healthy diet",
                 category: "routines",
                 temporalScope: "current",
                 evidenceText: "working out daily",
@@ -718,22 +752,12 @@ describe("Natural-language onboarding baseline (#70)", () => {
                 ],
                 confidence: 0.8,
               },
-            ];
-          }
-          // Nondeterministic second call produces different candidate!
-          return [
-            {
-              subject: "diet",
-              claim: "Eating healthy diet",
-              category: "routines",
-              temporalScope: "current",
-              evidenceText: "working out daily",
-              supportingEvidence: [
-                { statementEnvelopeId: request.currentStatementEnvelopeId, evidenceText: "working out daily" },
-              ],
-              confidence: 0.8,
+            ],
+            metadata: {
+              inferenceMechanism: "mock",
+              promptSchemaVersion: "v0.1",
             },
-          ];
+          };
         },
       };
 
@@ -801,30 +825,36 @@ describe("Natural-language onboarding baseline (#70)", () => {
       // Extractor ignores eligibleCategories and attempts to return unconsented opt-in candidate + prohibited topic candidate + valid candidate
       const rogueExtractor: BeliefExtractor = {
         async extractCandidates(request: ExtractionRequest) {
-          return [
-            {
-              subject: "unconsented_value",
-              claim: "Family well-being",
-              category: "values",
-              temporalScope: "durable",
-              evidenceText: "family focus",
-              supportingEvidence: [
-                { statementEnvelopeId: request.currentStatementEnvelopeId, evidenceText: "family focus" },
-              ],
-              confidence: 0.9,
+          return {
+            candidates: [
+              {
+                subject: "unconsented_value",
+                claim: "Family well-being",
+                category: "values",
+                temporalScope: "durable",
+                evidenceText: "family focus",
+                supportingEvidence: [
+                  { statementEnvelopeId: request.currentStatementEnvelopeId, evidenceText: "family focus" },
+                ],
+                confidence: 0.9,
+              },
+              {
+                subject: "career",
+                claim: "Building software business",
+                category: "goals",
+                temporalScope: "current",
+                evidenceText: "building software",
+                supportingEvidence: [
+                  { statementEnvelopeId: request.currentStatementEnvelopeId, evidenceText: "building software" },
+                ],
+                confidence: 0.95,
+              },
+            ],
+            metadata: {
+              inferenceMechanism: "mock",
+              promptSchemaVersion: "v0.1",
             },
-            {
-              subject: "career",
-              claim: "Building software business",
-              category: "goals",
-              temporalScope: "current",
-              evidenceText: "building software",
-              supportingEvidence: [
-                { statementEnvelopeId: request.currentStatementEnvelopeId, evidenceText: "building software" },
-              ],
-              confidence: 0.95,
-            },
-          ];
+          };
         },
       };
 
@@ -876,30 +906,36 @@ describe("Natural-language onboarding baseline (#70)", () => {
 
       const multiProposalExtractor: BeliefExtractor = {
         async extractCandidates(request: ExtractionRequest) {
-          return [
-            {
-              subject: "family",
-              claim: "Family well-being",
-              category: "values",
-              temporalScope: "durable",
-              evidenceText: "family",
-              supportingEvidence: [
-                { statementEnvelopeId: request.currentStatementEnvelopeId, evidenceText: "family" },
-              ],
-              confidence: 0.9,
+          return {
+            candidates: [
+              {
+                subject: "family",
+                claim: "Family well-being",
+                category: "values",
+                temporalScope: "durable",
+                evidenceText: "family",
+                supportingEvidence: [
+                  { statementEnvelopeId: request.currentStatementEnvelopeId, evidenceText: "family" },
+                ],
+                confidence: 0.9,
+              },
+              {
+                subject: "career",
+                claim: "Career growth",
+                category: "goals",
+                temporalScope: "current",
+                evidenceText: "career",
+                supportingEvidence: [
+                  { statementEnvelopeId: request.currentStatementEnvelopeId, evidenceText: "career" },
+                ],
+                confidence: 0.9,
+              },
+            ],
+            metadata: {
+              inferenceMechanism: "mock",
+              promptSchemaVersion: "v0.1",
             },
-            {
-              subject: "career",
-              claim: "Career growth",
-              category: "goals",
-              temporalScope: "current",
-              evidenceText: "career",
-              supportingEvidence: [
-                { statementEnvelopeId: request.currentStatementEnvelopeId, evidenceText: "career" },
-              ],
-              confidence: 0.9,
-            },
-          ];
+          };
         },
       };
 

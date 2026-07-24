@@ -29,9 +29,41 @@ export interface ClassifyResult {
   confidence: number;
 }
 
+export interface ExtractBeliefsRequest {
+  readonly currentQuestion: string;
+  readonly currentStatement: string;
+  readonly currentStatementEnvelopeId: string;
+  readonly priorTurns: readonly {
+    readonly question: string;
+    readonly statement: string;
+    readonly statementEnvelopeId: string;
+  }[];
+  readonly eligibleCategories: readonly string[];
+}
+
+export interface RawCandidateProposal {
+  readonly subject: string;
+  readonly claim: string;
+  readonly category: string;
+  readonly temporalScope: string;
+  readonly evidenceText: string;
+  readonly supportingEvidence: readonly {
+    readonly statementEnvelopeId: string;
+    readonly evidenceText: string;
+  }[];
+  readonly confidence: number;
+}
+
+export interface ExtractBeliefsResult {
+  readonly candidates: readonly RawCandidateProposal[];
+  readonly inferenceMechanism: string;
+  readonly promptSchemaVersion: string;
+  readonly modelName?: string;
+}
+
 /** Observability captured at the single AI chokepoint (Eng #7). */
 export interface AiUsage {
-  capability: "summarize" | "classify";
+  capability: "summarize" | "classify" | "extract_beliefs";
   provider: string;
   /** Opaque model/version label, mirrors `AiProvider.modelName` (#80). Never a vendor SDK type (Eng #8). */
   modelName?: string;
@@ -56,6 +88,7 @@ export interface AiCapabilities {
   readonly providerName: string;
   summarize(request: SummarizeRequest): Promise<SummarizeResult>;
   classify(request: ClassifyRequest): Promise<ClassifyResult>;
+  extractBeliefs(request: ExtractBeliefsRequest): Promise<ExtractBeliefsResult>;
 }
 
 /**
@@ -74,6 +107,7 @@ export interface AiProvider {
   readonly modelName?: string;
   summarize(request: SummarizeRequest): Promise<SummarizeResult>;
   classify(request: ClassifyRequest): Promise<ClassifyResult>;
+  extractBeliefs(request: ExtractBeliefsRequest): Promise<ExtractBeliefsResult>;
 }
 
 export class AiError extends Error {}

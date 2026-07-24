@@ -43,8 +43,19 @@ export interface ExtractionRequest {
 
 export type { CandidateBeliefProposal };
 
+export interface ExtractionResultMetadata {
+  readonly inferenceMechanism: string;
+  readonly promptSchemaVersion: string;
+  readonly modelName?: string;
+}
+
+export interface ExtractionResult {
+  readonly candidates: readonly CandidateBeliefProposal[];
+  readonly metadata: ExtractionResultMetadata;
+}
+
 export interface BeliefExtractor {
-  extractCandidates(request: ExtractionRequest): Promise<readonly CandidateBeliefProposal[]>;
+  extractCandidates(request: ExtractionRequest): Promise<ExtractionResult>;
 }
 
 // ============================================================================
@@ -179,7 +190,11 @@ export class DeterministicPolicyGate {
       return { valid: false };
     }
 
-    // Check sensitive content keywords across claim, evidence, or target statements
+    // Top-level evidenceText MUST be a verbatim substring of at least one target statement text
+    if (!targetStatementTexts.some((txt) => txt.includes(trimmedEvidence))) {
+      return { valid: false };
+    }
+
     const isSensitive =
       SENSITIVE_TOPIC_PATTERN.test(candidate.claim) ||
       SENSITIVE_TOPIC_PATTERN.test(candidate.evidenceText) ||
@@ -289,7 +304,7 @@ export class ScriptedBeliefExtractor implements BeliefExtractor {
     this.#rules = rules;
   }
 
-  async extractCandidates(request: ExtractionRequest): Promise<readonly CandidateBeliefProposal[]> {
+  async extractCandidates(request: ExtractionRequest): Promise<ExtractionResult> {
     const text = request.currentStatement;
     const candidates: CandidateBeliefProposal[] = [];
 
@@ -311,7 +326,13 @@ export class ScriptedBeliefExtractor implements BeliefExtractor {
       }
     }
 
-    return candidates;
+    return {
+      candidates,
+      metadata: {
+        inferenceMechanism: "scripted",
+        promptSchemaVersion: "v0.1",
+      },
+    };
   }
 }
 
@@ -350,6 +371,8 @@ export interface OnboardingTurnState {
   readonly extractionSnapshot?: readonly ValidatedCandidateProposal[];
   readonly expectedBeliefIds?: readonly string[];
   readonly policyVersion?: string;
+  readonly inferenceMechanism?: string;
+  readonly promptSchemaVersion?: string;
 }
 
 export interface OnboardingSessionState {
@@ -461,7 +484,15 @@ function foldStatementProcessed(
   state: OnboardingState,
   event: UserStatementProcessedEvent,
 ): OnboardingState {
-  const { sessionId, questionId, extractionResult, proposedBeliefIds, policyVersion } = event.payload;
+  const {
+    sessionId,
+    questionId,
+    extractionResult,
+    proposedBeliefIds,
+    policyVersion,
+    inferenceMechanism,
+    promptSchemaVersion,
+  } = event.payload;
   const session = state.sessions.get(sessionId);
   if (!session) return state;
 
@@ -479,6 +510,8 @@ function foldStatementProcessed(
         extractionSnapshot: extractionResult,
         expectedBeliefIds,
         policyVersion,
+        inferenceMechanism,
+        promptSchemaVersion,
       };
     }
     return turn;
@@ -1106,7 +1139,10 @@ export class OnboardingEngine {
           eligibleCategories,
         };
 
-        const rawCandidates = await this.#extractor.extractCandidates(extractionRequest);
+        const extractionRes = await this.#extractor.extractCandidates(extractionRequest);
+        const rawCandidates = extractionRes.candidates;
+        const inferenceMechanism = extractionRes.metadata.inferenceMechanism;
+        const promptSchemaVersion = extractionRes.metadata.promptSchemaVersion;
 
         for (let i = 0; i < rawCandidates.length; i++) {
           const candidate = rawCandidates[i]!;
@@ -1133,36 +1169,38 @@ export class OnboardingEngine {
 
           expectedBeliefIds.push(beliefId);
         }
-      }
 
-      await this.#runtime.recordExclusive(() => {
-        const s = this.#getProjectionState();
-        const sess = s.sessions.get(sessionId);
-        if (!sess || sess.status !== "active" || sess.isBaselineEstablished) return null;
+        await this.#runtime.recordExclusive(() => {
+          const s = this.#getProjectionState();
+          const sess = s.sessions.get(sessionId);
+          if (!sess || sess.status !== "active" || sess.isBaselineEstablished) return null;
 
-        const t = sess.turns.find((turn) => turn.questionId === questionId);
-        if (!t || t.statementEnvelopeId !== statementEnvelopeId) return null;
+          const t = sess.turns.find((turn) => turn.questionId === questionId);
+          if (!t || t.statementEnvelopeId !== statementEnvelopeId) return null;
 
-        if (t.extractionSnapshot) return null;
+          if (t.extractionSnapshot) return null;
 
-        const processedEvent = makeEvent({
-          id: `evt_stmt_proc_${statementId}`,
-          type: EventTypes.UserStatementProcessed,
-          source: "orion",
-          occurredAt,
-          payload: {
-            statementId,
-            statementEnvelopeId,
-            sessionId,
-            questionId,
-            extractionResult: validatedProposals,
-            proposedBeliefIds: expectedBeliefIds,
-            policyVersion: this.#policyGate.policyVersion,
-            processedAt: occurredAt,
-          },
+          const processedEvent = makeEvent({
+            id: `evt_stmt_proc_${statementId}`,
+            type: EventTypes.UserStatementProcessed,
+            source: "orion",
+            occurredAt,
+            payload: {
+              statementId,
+              statementEnvelopeId,
+              sessionId,
+              questionId,
+              extractionResult: validatedProposals,
+              proposedBeliefIds: expectedBeliefIds,
+              policyVersion: this.#policyGate.policyVersion,
+              inferenceMechanism,
+              promptSchemaVersion,
+              processedAt: occurredAt,
+            },
+          });
+          return processedEvent;
         });
-        return processedEvent;
-      });
+      }
     }
 
     // Step 5: Re-read state to get the durable extraction snapshot & expected belief IDs
@@ -1208,8 +1246,8 @@ export class OnboardingEngine {
             sourceEventIds: candidate.sourceEventIds,
             confidence: candidate.confidence,
             categoryPolicy: candidate.categoryPolicy,
-            inferenceMechanism: "v0.1",
-            promptSchemaVersion: "v0.1",
+            inferenceMechanism: turnWithSnapshot.inferenceMechanism ?? "deterministic",
+            promptSchemaVersion: turnWithSnapshot.promptSchemaVersion ?? "v0.1",
             validFrom: occurredAt,
             proposedAt: occurredAt,
           },

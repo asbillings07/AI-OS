@@ -6,6 +6,8 @@ import {
   type AiUsage,
   type ClassifyRequest,
   type ClassifyResult,
+  type ExtractBeliefsRequest,
+  type ExtractBeliefsResult,
   type SummarizeRequest,
   type SummarizeResult,
 } from "./capabilities.js";
@@ -58,8 +60,8 @@ function normalizeClassifyRequest(request: ClassifyRequest): NormalizedClassifyR
 }
 
 export interface CacheKeyInput {
-  readonly capability: "summarize" | "classify";
-  readonly request: NormalizedSummarizeRequest | NormalizedClassifyRequest;
+  readonly capability: "summarize" | "classify" | "extract_beliefs";
+  readonly request: unknown;
   readonly executionProfile: ExecutionProfile;
   readonly promptVersion: string;
   readonly schemaVersion: number;
@@ -107,7 +109,11 @@ export function computeCacheKey(input: CacheKeyInput): string {
 }
 
 /** Bumped by hand whenever `SummarizeResult`/`ClassifyResult`'s shape changes. */
-const SCHEMA_VERSION: Record<"summarize" | "classify", number> = { summarize: 1, classify: 1 };
+const SCHEMA_VERSION: Record<"summarize" | "classify" | "extract_beliefs", number> = {
+  summarize: 1,
+  classify: 1,
+  extract_beliefs: 1,
+};
 
 /**
  * Bumped by hand whenever a provider's prompt-construction logic changes.
@@ -129,7 +135,7 @@ export interface AiRequestObservation extends AiUsage {
 export interface AiCacheEvictionObservation {
   readonly kind: "cache_eviction";
   readonly reason: "expired" | "capacity";
-  readonly capability: "summarize" | "classify";
+  readonly capability: "summarize" | "classify" | "extract_beliefs";
   readonly provider: string;
   readonly modelName?: string;
 }
@@ -155,16 +161,17 @@ export interface AiCacheOptions {
  * caller mutating its returned value can never corrupt the shared cache entry
  * or another caller's copy.
  */
-function cloneResult<T extends { confidence: number }>(result: T): T {
+function cloneResult<T extends object>(result: T): T {
+  if (Array.isArray(result)) return [...result] as unknown as T;
   return { ...result };
 }
 
 interface CacheEntry {
-  promise: Promise<{ confidence: number }>;
+  promise: Promise<object>;
   state: "pending" | "resolved";
   /** Set only when `state` transitions to `"resolved"` — the TTL clock starts here. */
   storedAt?: number;
-  readonly capability: "summarize" | "classify";
+  readonly capability: "summarize" | "classify" | "extract_beliefs";
   readonly provider: string;
   readonly modelName?: string;
 }
@@ -218,8 +225,8 @@ export function withCache(inner: AiCapabilities, options: AiCacheOptions = {}): 
     }
   }
 
-  async function cached<T extends { confidence: number }>(
-    capability: "summarize" | "classify",
+  async function cached<T extends object>(
+    capability: "summarize" | "classify" | "extract_beliefs",
     key: string,
     call: () => Promise<T>,
   ): Promise<T> {
@@ -259,7 +266,7 @@ export function withCache(inner: AiCapabilities, options: AiCacheOptions = {}): 
           ok: true,
           providerInvoked: false,
           cache,
-          confidence: result.confidence,
+          confidence: "confidence" in result ? (result as any).confidence : undefined,
         });
         return cloneResult(result);
       } catch (error) {
@@ -353,6 +360,16 @@ export function withCache(inner: AiCapabilities, options: AiCacheOptions = {}): 
         schemaVersion: SCHEMA_VERSION.classify,
       });
       return cached("classify", key, () => inner.classify(snapshot));
+    },
+    extractBeliefs(request: ExtractBeliefsRequest): Promise<ExtractBeliefsResult> {
+      const key = computeCacheKey({
+        capability: "extract_beliefs",
+        request,
+        executionProfile,
+        promptVersion: PROMPT_VERSION,
+        schemaVersion: SCHEMA_VERSION.extract_beliefs,
+      });
+      return cached("extract_beliefs", key, () => inner.extractBeliefs(request));
     },
   };
 }

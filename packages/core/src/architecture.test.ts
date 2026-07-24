@@ -52,10 +52,11 @@ interface PackageRule {
 const RULES: readonly PackageRule[] = [
   {
     // core is domain-only. It MAY use better-sqlite3 (the storage impl behind
-    // EventStore, ADR-0009), but nothing else in the workspace, no UI, no SDKs.
+    // EventStore, ADR-0009) and @orion/ai for belief extraction (ADR-0011),
+    // but no UI and no direct provider SDKs.
     name: "@orion/core",
     dir: "packages/core",
-    allowedWorkspace: [],
+    allowedWorkspace: ["@orion/ai"],
     forbiddenExternal: [...UI, ...PROVIDER_SDKS],
   },
   {
@@ -306,12 +307,12 @@ describe("architecture fitness — the checker actually catches violations", () 
   });
 
   it("catches a named import of a forbidden package (the regex-era blind spot)", () => {
-    expect(violationsInContent(coreRule, coreFile, 'import { createAi } from "@orion/ai";')).not.toEqual([]);
+    expect(violationsInContent(coreRule, coreFile, 'import x from "react";')).not.toEqual([]);
   });
 
   it("catches a relative import that escapes into another package", () => {
     expect(
-      violationsInContent(coreRule, coreFile, 'import { createAi } from "../../ai/src/index.js";'),
+      violationsInContent(coreRule, coreFile, 'import x from "../../gmail-skill/src/index.js";'),
     ).not.toEqual([]);
   });
 

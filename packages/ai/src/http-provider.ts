@@ -3,6 +3,8 @@ import {
   type AiProvider,
   type ClassifyRequest,
   type ClassifyResult,
+  type ExtractBeliefsRequest,
+  type ExtractBeliefsResult,
   type SummarizeRequest,
   type SummarizeResult,
 } from "./capabilities.js";
@@ -56,6 +58,63 @@ export class HttpAiProvider implements AiProvider {
     const raw = (await this.#chat(system, request.text)).trim().toLowerCase();
     const label = request.labels.find((candidate) => candidate.toLowerCase() === raw) ?? firstLabel;
     return { label, confidence: 0.7 };
+  }
+
+  async extractBeliefs(request: ExtractBeliefsRequest): Promise<ExtractBeliefsResult> {
+    const systemPrompt = `You are an expert natural language analyzer for Orion, an AI Operating System.
+Your task is to analyze a user's statement during a conversation and extract structured candidate beliefs about what matters to the user.
+
+RULES:
+1. ONLY extract beliefs explicitly stated or directly implied by the user's words.
+2. DO NOT invent, assume, or hallucinate beliefs or evidence not present in the input text.
+3. Every item in supportingEvidence MUST contain an evidenceText string that is an EXACT, VERBATIM substring of the user's statement text.
+4. Categorize beliefs strictly into eligible categories: [values, roles_and_relationships, goals, priorities, constraints, routines].
+5. Do NOT extract beliefs for categories not listed in eligible categories.
+6. Temporal scope must be one of: [durable, current, bounded, unknown].
+7. Assign confidence between 0.0 and 1.0 based on clarity and directness.
+8. If the statement expresses no clear personal beliefs, or if the user is speaking strictly about third parties or expressing negations without positive belief, return an empty list of candidates [].
+
+OUTPUT FORMAT:
+Return strictly a JSON object with a "candidates" key containing an array of objects:
+{
+  "candidates": [
+    {
+      "subject": "short_subject_identifier",
+      "claim": "Clear summary claim of the belief",
+      "category": "category_name",
+      "temporalScope": "durable" | "current" | "bounded" | "unknown",
+      "evidenceText": "Top-level evidence snippet from statement",
+      "supportingEvidence": [
+        {
+          "statementEnvelopeId": "target_envelope_id",
+          "evidenceText": "VERBATIM text snippet from target statement"
+        }
+      ],
+      "confidence": 0.9
+    }
+  ]
+}`;
+    const userPrompt = JSON.stringify(request, null, 2);
+    let candidates: any[] = [];
+    try {
+      const raw = await this.#chat(systemPrompt, userPrompt);
+      const cleanJson = raw
+        .replace(/^```(?:json)?\s*/i, "")
+        .replace(/\s*```$/i, "")
+        .trim();
+      const parsed = JSON.parse(cleanJson);
+      if (parsed && typeof parsed === "object" && Array.isArray((parsed as any).candidates)) {
+        candidates = (parsed as any).candidates;
+      }
+    } catch {
+      candidates = [];
+    }
+    return {
+      candidates,
+      inferenceMechanism: `http:${this.modelName}`,
+      promptSchemaVersion: "v0.1",
+      modelName: this.modelName,
+    };
   }
 
   async #chat(system: string, user: string): Promise<string> {

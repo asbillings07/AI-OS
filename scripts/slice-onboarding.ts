@@ -11,6 +11,7 @@
  *
  *   npm run slice:onboarding
  */
+import { createAi } from "@orion/ai";
 import {
   InProcessEventBus,
   LlmBeliefExtractor,
@@ -38,11 +39,14 @@ async function main(): Promise<void> {
       projections: [host as ProjectionHost<unknown>],
     });
 
-    // Provider-neutral LlmBeliefExtractor with structured LLM completion
-    const extractor = new LlmBeliefExtractor({
-      completion: async (options) => {
-        // Simulates structured LLM interpretation of the natural-language user statement
-        return JSON.stringify({
+    // Provider-neutral LlmBeliefExtractor with AI capability layer
+    const ai = createAi({
+      provider: {
+        name: "demo-mock",
+        modelName: "demo-v1",
+        summarize: async () => ({ summary: "", confidence: 0 }),
+        classify: async () => ({ label: "", confidence: 0 }),
+        extractBeliefs: async (req) => ({
           candidates: [
             {
               subject: "family",
@@ -52,7 +56,7 @@ async function main(): Promise<void> {
               evidenceText: "family",
               supportingEvidence: [
                 {
-                  statementEnvelopeId: "evt_stmt_stmt_session_demo_1_q_session_demo_1_1",
+                  statementEnvelopeId: req.currentStatementEnvelopeId,
                   evidenceText: "family",
                 },
               ],
@@ -66,7 +70,7 @@ async function main(): Promise<void> {
               evidenceText: "career",
               supportingEvidence: [
                 {
-                  statementEnvelopeId: "evt_stmt_stmt_session_demo_1_q_session_demo_1_1",
+                  statementEnvelopeId: req.currentStatementEnvelopeId,
                   evidenceText: "career",
                 },
               ],
@@ -80,16 +84,20 @@ async function main(): Promise<void> {
               evidenceText: "health",
               supportingEvidence: [
                 {
-                  statementEnvelopeId: "evt_stmt_stmt_session_demo_1_q_session_demo_1_1",
+                  statementEnvelopeId: req.currentStatementEnvelopeId,
                   evidenceText: "health",
                 },
               ],
               confidence: 0.85,
             },
           ],
-        });
+          inferenceMechanism: "demo-mock:demo-v1",
+          promptSchemaVersion: "v0.1",
+        }),
       },
     });
+
+    const extractor = new LlmBeliefExtractor({ ai });
 
     const engine = new OnboardingEngine({
       runtime,

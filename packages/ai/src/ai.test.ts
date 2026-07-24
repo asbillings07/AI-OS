@@ -65,6 +65,9 @@ describe("AI capability layer (ADR-0011)", () => {
       async classify() {
         return { label: "a", confidence: 0.9 };
       },
+      async extractBeliefs() {
+        return { candidates: [], inferenceMechanism: "invalid", promptSchemaVersion: "v0.1" };
+      },
     };
     const ai = createAi({ provider: invalidProvider });
     await expect(ai.summarize({ text: "hi" })).rejects.toThrow(/empty or invalid summary/);
@@ -79,6 +82,9 @@ describe("AI capability layer (ADR-0011)", () => {
       async classify() {
         return { label: "a", confidence: 0.9 };
       },
+      async extractBeliefs() {
+        return { candidates: [], inferenceMechanism: "blank", promptSchemaVersion: "v0.1" };
+      },
     };
     const ai = createAi({ provider: blank });
     await expect(ai.summarize({ text: "hi" })).rejects.toThrow(/empty or invalid summary/);
@@ -92,6 +98,9 @@ describe("AI capability layer (ADR-0011)", () => {
       },
       async classify() {
         return { label: "totally_made_up", confidence: 0.9 };
+      },
+      async extractBeliefs() {
+        return { candidates: [], inferenceMechanism: "rogue", promptSchemaVersion: "v0.1" };
       },
     };
     const ai = createAi({ provider: rogue });
@@ -145,6 +154,9 @@ describe("AI capability layer (ADR-0011)", () => {
         async classify() {
           return { label: "a", confidence: 0.5 };
         },
+        async extractBeliefs() {
+          return { candidates: [], inferenceMechanism: "counting", promptSchemaVersion: "v0.1" };
+        },
       };
       const ai = createAi({ provider: counting, cache: false, env: { ORION_AI_CACHE: "on" } });
       await ai.summarize({ text: "same" });
@@ -163,6 +175,9 @@ describe("AI capability layer (ADR-0011)", () => {
         async classify() {
           return { label: "a", confidence: 0.5 };
         },
+        async extractBeliefs() {
+          return { candidates: [], inferenceMechanism: "counting", promptSchemaVersion: "v0.1" };
+        },
       };
       const ai = createAi({ provider: counting, cache: true, env: { ORION_AI_CACHE: "off" } });
       await ai.summarize({ text: "same" });
@@ -180,6 +195,9 @@ describe("AI capability layer (ADR-0011)", () => {
         },
         async classify() {
           return { label: "a", confidence: 0.5 };
+        },
+        async extractBeliefs() {
+          return { candidates: [], inferenceMechanism: "counting", promptSchemaVersion: "v0.1" };
         },
       };
       const ai = createAi({ provider: counting, env: { ORION_AI_CACHE: "off" } });

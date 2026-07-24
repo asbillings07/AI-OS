@@ -3,6 +3,8 @@ import {
   type AiProvider,
   type ClassifyRequest,
   type ClassifyResult,
+  type ExtractBeliefsRequest,
+  type ExtractBeliefsResult,
   type SummarizeRequest,
   type SummarizeResult,
 } from "./capabilities.js";
@@ -62,6 +64,14 @@ export class DeterministicProvider implements AiProvider {
     return {
       label: best.label,
       confidence: best.score === 0 ? 0.1 : Math.min(0.9, best.score / (best.score + 1)),
+    };
+  }
+
+  async extractBeliefs(request: ExtractBeliefsRequest): Promise<ExtractBeliefsResult> {
+    return {
+      candidates: [],
+      inferenceMechanism: "deterministic",
+      promptSchemaVersion: "v0.1",
     };
   }
 }

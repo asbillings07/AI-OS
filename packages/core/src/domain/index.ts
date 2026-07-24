@@ -371,6 +371,8 @@ export interface UserStatementProcessedPayload {
   readonly extractionResult: readonly ValidatedCandidateProposal[];
   readonly proposedBeliefIds: readonly string[];
   readonly policyVersion: string;
+  readonly inferenceMechanism: string;
+  readonly promptSchemaVersion: string;
   readonly processedAt: string;
 }
 
