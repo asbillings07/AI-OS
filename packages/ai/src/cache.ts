@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  AiError,
   isValidSummary,
   type AiCapabilities,
   type AiUsage,
@@ -243,6 +244,12 @@ export function withCache(inner: AiCapabilities, options: AiCacheOptions = {}): 
       const cache: "hit" | "coalesced" = existing.state === "resolved" ? "hit" : "coalesced";
       try {
         const result = (await existing.promise) as T;
+        if (capability === "summarize" && !isValidSummary((result as unknown as SummarizeResult).summary)) {
+          if (store.get(key) === existing) {
+            store.delete(key);
+          }
+          throw new AiError("summarize: cached summary is invalid");
+        }
         emit({
           kind: "request",
           capability,
@@ -279,7 +286,12 @@ export function withCache(inner: AiCapabilities, options: AiCacheOptions = {}): 
     // Every future hit/coalesced read shares this exact clone (the same
     // settled promise), so freezing it here protects all of them; callers
     // still never receive it directly — see `cloneResult` below.
-    const promise = call().then((result) => Object.freeze(cloneResult(result)) as T);
+    const promise = call().then((result) => {
+      if (capability === "summarize" && !isValidSummary((result as unknown as SummarizeResult).summary)) {
+        throw new AiError("summarize: summary is invalid");
+      }
+      return Object.freeze(cloneResult(result)) as T;
+    });
     const entry: CacheEntry = {
       promise,
       state: "pending",

@@ -173,6 +173,24 @@ describe("withCache (#80)", () => {
     expect(second).not.toBe(first);
   });
 
+  it("rejects and removes invalid summaries returned by inner, avoiding caching invalid string literals like 'undefined' (#87)", async () => {
+    let calls = 0;
+    const inner: AiCapabilities = {
+      providerName: "fake",
+      async summarize() {
+        calls++;
+        return { summary: "undefined", confidence: 0.9 };
+      },
+      async classify() {
+        throw new Error("unused");
+      },
+    };
+    const ai = withCache(inner);
+    await expect(ai.summarize({ text: "hello" })).rejects.toThrow(/summary is invalid/);
+    await expect(ai.summarize({ text: "hello" })).rejects.toThrow(/summary is invalid/);
+    expect(calls).toBe(2);
+  });
+
   it("never freezes or otherwise modifies the object inner itself returned (regression)", async () => {
     // Simulates an AiCapabilities implementation that returns (and may keep
     // using/mutating) the very same object across calls, e.g. internal
