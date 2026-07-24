@@ -945,6 +945,108 @@ describe("Candidate Belief Extraction from Natural Language (#71)", () => {
     expect(session.beliefs.size).toBe(0);
   });
 
+  it("Contract Check 13: Reject second-person subject transfer sensitive claims (e.g. 'I think you have cancer')", async () => {
+    const store = new SqliteEventStore(":memory:");
+    const bus = new InProcessEventBus();
+    const host = new ProjectionHost(onboardingProjection);
+    const runtime = new OrionRuntime({ bus, store, projections: [host as ProjectionHost<unknown>] });
+
+    const policyGate = new DeterministicPolicyGate({
+      allowedCategories: ALL_CATEGORIES,
+    });
+
+    const ai = createMockAi(async (req) => ({
+      candidates: [
+        {
+          subject: "health",
+          claim: "I have cancer",
+          category: "values",
+          temporalScope: "durable",
+          evidenceText: "I think you have cancer",
+          supportingEvidence: [
+            {
+              statementEnvelopeId: req.currentStatementEnvelopeId,
+              evidenceText: "I think you have cancer",
+            },
+          ],
+          confidence: 0.95,
+        },
+      ],
+    }));
+
+    const extractor = new LlmBeliefExtractor({ ai });
+    const engine = new OnboardingEngine({
+      runtime,
+      extractor,
+      policyGate,
+      getProjectionState: () => host.state,
+    });
+
+    const { sessionId, questionId } = await engine.startSession({ sessionId: "sess_second_person_transfer", now: NOW });
+    const { proposedBeliefs } = await engine.recordStatement({
+      sessionId,
+      questionId,
+      rawText: "I think you have cancer.",
+      now: NOW,
+    });
+
+    // Must be rejected because 'cancer' is attributed to second person 'you', not the user
+    expect(proposedBeliefs).toHaveLength(0);
+    const session = host.state.sessions.get(sessionId)!;
+    expect(session.beliefs.size).toBe(0);
+  });
+
+  it("Contract Check 14: Reject positive sensitive claims derived from negated evidence (e.g. 'I do not have cancer')", async () => {
+    const store = new SqliteEventStore(":memory:");
+    const bus = new InProcessEventBus();
+    const host = new ProjectionHost(onboardingProjection);
+    const runtime = new OrionRuntime({ bus, store, projections: [host as ProjectionHost<unknown>] });
+
+    const policyGate = new DeterministicPolicyGate({
+      allowedCategories: ALL_CATEGORIES,
+    });
+
+    const ai = createMockAi(async (req) => ({
+      candidates: [
+        {
+          subject: "health",
+          claim: "I have cancer",
+          category: "values",
+          temporalScope: "durable",
+          evidenceText: "I do not have cancer",
+          supportingEvidence: [
+            {
+              statementEnvelopeId: req.currentStatementEnvelopeId,
+              evidenceText: "I do not have cancer",
+            },
+          ],
+          confidence: 0.95,
+        },
+      ],
+    }));
+
+    const extractor = new LlmBeliefExtractor({ ai });
+    const engine = new OnboardingEngine({
+      runtime,
+      extractor,
+      policyGate,
+      getProjectionState: () => host.state,
+    });
+
+    const { sessionId, questionId } = await engine.startSession({ sessionId: "sess_negated_evidence", now: NOW });
+    const { proposedBeliefs } = await engine.recordStatement({
+      sessionId,
+      questionId,
+      rawText: "I do not have cancer.",
+      now: NOW,
+    });
+
+    // Must be rejected because positive claim 'I have cancer' contradicts negated evidence 'I do not have cancer'
+    expect(proposedBeliefs).toHaveLength(0);
+    const session = host.state.sessions.get(sessionId)!;
+    expect(session.beliefs.size).toBe(0);
+  });
+
   it("Acceptance Case: User correction of an earlier statement produces corrected belief candidate", async () => {
     const store = new SqliteEventStore(":memory:");
     const bus = new InProcessEventBus();
