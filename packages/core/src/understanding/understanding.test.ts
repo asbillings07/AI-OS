@@ -517,6 +517,17 @@ describe("Signal detection (deterministic)", () => {
     // 3. "Your request was accepted; please sign the agreement." -> ExplicitRequest
     const c3 = fold([message({ threadId: "t3", messageId: "m3", subject: "Request accepted", body: "Your request was accepted; please sign the agreement." })]);
     expect(detectSignals(c3, "2026-07-15T12:00:00.000Z").map((s) => s.kind)).toContain("ExplicitRequest");
+
+    // 4. "Your speaker proposal was accepted. Please RSVP for the kickoff." -> Invitation
+    const c4 = fold([
+      message({
+        threadId: "t4",
+        messageId: "m4",
+        subject: "Speaker proposal status",
+        body: "Your speaker proposal was accepted. Please RSVP for the kickoff.",
+      }),
+    ]);
+    expect(detectSignals(c4, "2026-07-15T12:00:00.000Z").map((s) => s.kind)).toContain("Invitation");
   });
 
   it("clears earlier invitation when a later message in the active turn cancels or declines it (#88)", () => {

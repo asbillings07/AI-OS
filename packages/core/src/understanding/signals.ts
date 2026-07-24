@@ -38,7 +38,8 @@ export interface Signal {
 
 const AGING_HOURS = 24;
 const QUESTION_PATTERN = /\?|\b(can you|could you|would you|when can|are you able)\b/i;
-const COMPLETED_INVITATION_PATTERN = /\b(accepted|declined|canceled|cancelled|confirmed)\b/i;
+const COMPLETED_INVITATION_PATTERN =
+  /\b((invitation|invite|meeting|sync|event)\b[\w\s]{0,20}?\b(accepted|declined|canceled|cancelled|confirmed)|(accepted|declined|canceled|cancelled)\b[\w\s]{0,20}?\b(invitation|invite|meeting|sync|event)|rsvp\s+(confirmed|accepted|declined))\b/i;
 const EXPLICIT_REQUEST_PATTERN =
   /\b(action required|please review|please approve|need your input|feedback needed|please sign|need you to|could you send|would you send|send me|let me know|any thoughts|thoughts on)\b/i;
 const INVITATION_PATTERN =
