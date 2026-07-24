@@ -77,3 +77,27 @@ export interface AiProvider {
 }
 
 export class AiError extends Error {}
+
+/**
+ * Validate that a summary string is non-empty, non-whitespace, and not a malformed/
+ * literal string value such as "undefined", "null", or "[object Object]".
+ */
+export function isValidSummary(summary: unknown): summary is string {
+  if (typeof summary !== "string") return false;
+  const trimmed = summary.trim();
+  if (trimmed.length === 0) return false;
+  const lower = trimmed.toLowerCase();
+  if (
+    lower === "undefined" ||
+    lower === "undefined." ||
+    lower === "null" ||
+    lower === "null." ||
+    lower === "[undefined]" ||
+    lower === "[null]" ||
+    lower === "[object object]" ||
+    lower === "nan"
+  ) {
+    return false;
+  }
+  return true;
+}

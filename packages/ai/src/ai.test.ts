@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createAi, DeterministicProvider, type AiProvider, type AiObservation } from "./index.js";
+import { createAi, isValidSummary, DeterministicProvider, type AiProvider, type AiObservation } from "./index.js";
 
 describe("AI capability layer (ADR-0011)", () => {
   it("defaults to the deterministic, offline provider (no key required)", () => {
@@ -43,6 +43,33 @@ describe("AI capability layer (ADR-0011)", () => {
     );
   });
 
+  it("isValidSummary accurately distinguishes presentation-safe strings from invalid ones", () => {
+    expect(isValidSummary("Discussed Q3 deck review")).toBe(true);
+    expect(isValidSummary("   ")).toBe(false);
+    expect(isValidSummary("undefined")).toBe(false);
+    expect(isValidSummary("undefined.")).toBe(false);
+    expect(isValidSummary("null")).toBe(false);
+    expect(isValidSummary("null.")).toBe(false);
+    expect(isValidSummary("[object Object]")).toBe(false);
+    expect(isValidSummary("NaN")).toBe(false);
+    expect(isValidSummary(undefined)).toBe(false);
+    expect(isValidSummary(null)).toBe(false);
+  });
+
+  it("rejects an invalid summary string literal from a provider (e.g. 'undefined' or 'null')", async () => {
+    const invalidProvider: AiProvider = {
+      name: "invalid",
+      async summarize() {
+        return { summary: "undefined.", confidence: 0.9 };
+      },
+      async classify() {
+        return { label: "a", confidence: 0.9 };
+      },
+    };
+    const ai = createAi({ provider: invalidProvider });
+    await expect(ai.summarize({ text: "hi" })).rejects.toThrow(/empty or invalid summary/);
+  });
+
   it("rejects a whitespace-only summary from a provider", async () => {
     const blank: AiProvider = {
       name: "blank",
@@ -54,7 +81,7 @@ describe("AI capability layer (ADR-0011)", () => {
       },
     };
     const ai = createAi({ provider: blank });
-    await expect(ai.summarize({ text: "hi" })).rejects.toThrow(/empty summary/);
+    await expect(ai.summarize({ text: "hi" })).rejects.toThrow(/empty or invalid summary/);
   });
 
   it("coerces a provider label outside the allowed set (structured validation)", async () => {

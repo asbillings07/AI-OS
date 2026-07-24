@@ -1,5 +1,6 @@
 import type { WorkItem } from "@orion/core";
 import type { GmailIntegrationState } from "@orion/gmail-auth";
+import { isValidSummary } from "@orion/ai";
 import { readMissionControl, type MissionControlView } from "../lib/orion";
 import { actOnWorkItem, suppressOriginatorAction, unsuppressOriginatorAction } from "./actions";
 
@@ -157,10 +158,12 @@ function Card({ item, muted }: { item: WorkItem; muted?: boolean }) {
       ) : null}
       <p className="card__reason">{item.reason}</p>
 
-      {item.summary ? (
+      {item.summary && isValidSummary(item.summary) ? (
         <p className="card__summary">
           {item.summary}
-          <span className="card__advisory"> · AI summary</span>
+          {item.summaryConfidence !== undefined ? (
+            <span className="card__advisory"> · AI summary</span>
+          ) : null}
         </p>
       ) : null}
 

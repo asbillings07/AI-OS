@@ -26,7 +26,7 @@ import {
   type WorkItemAction,
 } from "@orion/core";
 import { GitHubSkill } from "@orion/github-skill";
-import { createAi, type AiCapabilities, type AiObservation } from "@orion/ai";
+import { createAi, isValidSummary, type AiCapabilities, type AiObservation } from "@orion/ai";
 import type { GmailIntegrationState } from "@orion/gmail-auth";
 import { getGmailIntegration } from "./gmail-auth";
 import { syncConfiguredGmail, type GmailSyncResult } from "./gmail-sync";
@@ -124,6 +124,82 @@ export interface MissionControlView {
  * connected account shows up immediately. A live sync failure is surfaced via
  * `gmailSync` and never substitutes fixtures.
  */
+export function extractSnippet(text: string | undefined): string | undefined {
+  if (!text) return undefined;
+  const cleaned = text.replace(/\s+/g, " ").trim();
+  if (cleaned.length === 0) return undefined;
+  const firstSentence = cleaned.split(/(?<=[.!?])\s+/)[0] ?? cleaned;
+  const snippet = firstSentence.length > 140 ? `${firstSentence.slice(0, 137)}...` : firstSentence;
+  return isValidSummary(snippet) ? snippet : undefined;
+}
+
+export interface SummarizeCapability {
+  summarize(request: { text: string; purpose?: string; maxSentences?: number }): Promise<{ summary: string; confidence: number }>;
+}
+
+export async function enrichWorkItemWithSummary(
+  item: WorkItem,
+  contextState: ContextState,
+  ai: SummarizeCapability,
+): Promise<WorkItem> {
+  let currentItem = item;
+  if (currentItem.summary !== undefined && !isValidSummary(currentItem.summary)) {
+    const { summary, summaryConfidence, ...rest } = currentItem;
+    currentItem = rest as WorkItem;
+  }
+
+  // Summaries apply where a conversation body exists — a domain capability
+  // distinction (this Subject is a conversation), not a vendor branch.
+  if (currentItem.subject.kind === "thread") {
+    const thread = contextState.threads[currentItem.subject.id];
+    // Summarize the CURRENT revision (newest occurrence), not the last appended
+    // message — matching the attention basis the user is shown.
+    const currentMessage = thread ? latestThreadMessage(thread) : undefined;
+    if (currentMessage) {
+      try {
+        const { summary, confidence } = await ai.summarize({
+          text: currentMessage.body,
+          purpose: "conversation triage",
+          maxSentences: 1,
+        });
+        if (isValidSummary(summary)) {
+          const { summaryConfidence, ...cleanItem } = currentItem;
+          return { ...cleanItem, summary: summary.trim(), summaryConfidence: confidence } as WorkItem;
+        }
+      } catch {
+        // AI summary failed/invalid -> fall through to deterministic source content fallback
+      }
+
+      // Deterministic source content fallback
+      const bodySnippet = extractSnippet(currentMessage.body);
+      if (bodySnippet) {
+        const { summaryConfidence, ...cleanItem } = currentItem;
+        return { ...cleanItem, summary: bodySnippet } as WorkItem;
+      }
+      const subjectSnippet = extractSnippet(currentMessage.subject) ?? extractSnippet(currentItem.title);
+      if (subjectSnippet) {
+        const { summaryConfidence, ...cleanItem } = currentItem;
+        return { ...cleanItem, summary: subjectSnippet } as WorkItem;
+      }
+    }
+  }
+
+  if (currentItem.summary && isValidSummary(currentItem.summary)) {
+    return currentItem;
+  }
+  const { summary, summaryConfidence, ...cleanItem } = currentItem;
+  return cleanItem as WorkItem;
+}
+
+/**
+ * The read model Mission Control renders. Work Items come from deterministic
+ * prioritization; the AI summary is layered on afterward as advisory context
+ * only — every item's `reason`/`evidence` already explains itself without AI.
+ *
+ * Gmail is ingested here, at read time, before Work Items are built, so a newly
+ * connected account shows up immediately. A live sync failure is surfaced via
+ * `gmailSync` and never substitutes fixtures.
+ */
 export async function readMissionControl(): Promise<MissionControlView> {
   const { context, attention, importance, ai, logger, runtime } = await getService();
   const gmailSync = await syncConfiguredGmail(runtime, logger);
@@ -141,26 +217,7 @@ export async function readMissionControl(): Promise<MissionControlView> {
   // unchanged thread never re-invokes a live provider — this loop is cheap
   // per render regardless of provider.
   const enriched = await Promise.all(
-    items.map(async (item): Promise<WorkItem> => {
-      // Summaries apply where a conversation body exists — a domain capability
-      // distinction (this Subject is a conversation), not a vendor branch.
-      if (item.subject.kind !== "thread") return item;
-      const thread = context.state.threads[item.subject.id];
-      // Summarize the CURRENT revision (newest occurrence), not the last appended
-      // message — matching the attention basis the user is shown.
-      const currentMessage = thread ? latestThreadMessage(thread) : undefined;
-      if (!currentMessage) return item;
-      try {
-        const { summary, confidence } = await ai.summarize({
-          text: currentMessage.body,
-          purpose: "conversation triage",
-          maxSentences: 1,
-        });
-        return { ...item, summary, summaryConfidence: confidence };
-      } catch {
-        return item;
-      }
-    }),
+    items.map((item) => enrichWorkItemWithSummary(item, context.state, ai)),
   );
 
   return {
