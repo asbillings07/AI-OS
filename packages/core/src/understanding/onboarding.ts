@@ -16,6 +16,7 @@ import type {
   UserStatementRecordedEvent,
   UserUnderstandingBaselineDeletedEvent,
   UserUnderstandingBaselineEstablishedEvent,
+  ValidatedCandidateProposal,
 } from "../domain/index.js";
 import { EventTypes } from "../domain/index.js";
 import type { EventEnvelope } from "../events/index.js";
@@ -72,6 +73,7 @@ export interface PolicyGateOptions {
 }
 
 export class DeterministicPolicyGate {
+  readonly policyVersion = "v0.1";
   readonly #optInCategories: ReadonlySet<BeliefCategory>;
   readonly #grantedConsentCategories: ReadonlySet<BeliefCategory>;
   readonly #prohibitedCategories: ReadonlySet<BeliefCategory>;
@@ -119,6 +121,11 @@ export class DeterministicPolicyGate {
     readonly categoryPolicy?: "allowed" | "confirmation_required";
     readonly sourceEventIds?: readonly string[];
   } {
+    // Require explicit, non-empty supportingEvidence array
+    if (!candidate.supportingEvidence || candidate.supportingEvidence.length === 0) {
+      return { valid: false };
+    }
+
     // Category pre-filtering check
     const eligible = this.getEligibleCategories();
     if (!eligible.has(candidate.category)) {
@@ -140,32 +147,28 @@ export class DeterministicPolicyGate {
 
     // Validate explicit supportingEvidence references
     const validatedSourceIds: string[] = [];
+    const targetStatementTexts: string[] = [];
 
-    if (candidate.supportingEvidence && candidate.supportingEvidence.length > 0) {
-      for (const ref of candidate.supportingEvidence) {
-        const refText = ref.evidenceText.trim();
-        if (refText.length === 0) return { valid: false };
+    for (const ref of candidate.supportingEvidence) {
+      const refText = ref.evidenceText.trim();
+      if (refText.length === 0) return { valid: false };
 
-        if (ref.statementEnvelopeId === request.currentStatementEnvelopeId) {
-          if (!request.currentStatement.includes(refText)) return { valid: false };
-          validatedSourceIds.push(request.currentStatementEnvelopeId);
-        } else {
-          const matchingTurn = request.priorTurns.find(
-            (t) => t.statementEnvelopeId === ref.statementEnvelopeId,
-          );
-          if (!matchingTurn || !matchingTurn.statement.includes(refText)) return { valid: false };
-          validatedSourceIds.push(matchingTurn.statementEnvelopeId);
-        }
+      // Top-level evidenceText MUST contain the referenced evidence span
+      if (!trimmedEvidence.includes(refText)) {
+        return { valid: false };
       }
-    } else {
-      // If supportingEvidence not provided, require evidenceText to match current statement or a prior turn strictly
-      if (request.currentStatement.includes(trimmedEvidence)) {
+
+      if (ref.statementEnvelopeId === request.currentStatementEnvelopeId) {
+        if (!request.currentStatement.includes(refText)) return { valid: false };
         validatedSourceIds.push(request.currentStatementEnvelopeId);
+        targetStatementTexts.push(request.currentStatement);
       } else {
-        const matchingTurn = request.priorTurns.find((t) => t.statement.includes(trimmedEvidence));
-        if (matchingTurn) {
-          validatedSourceIds.push(matchingTurn.statementEnvelopeId);
-        }
+        const matchingTurn = request.priorTurns.find(
+          (t) => t.statementEnvelopeId === ref.statementEnvelopeId,
+        );
+        if (!matchingTurn || !matchingTurn.statement.includes(refText)) return { valid: false };
+        validatedSourceIds.push(matchingTurn.statementEnvelopeId);
+        targetStatementTexts.push(matchingTurn.statement);
       }
     }
 
@@ -177,7 +180,7 @@ export class DeterministicPolicyGate {
     const isSensitive =
       SENSITIVE_TOPIC_PATTERN.test(candidate.claim) ||
       SENSITIVE_TOPIC_PATTERN.test(candidate.evidenceText) ||
-      SENSITIVE_TOPIC_PATTERN.test(request.currentStatement);
+      targetStatementTexts.some((txt) => SENSITIVE_TOPIC_PATTERN.test(txt));
 
     // Effective post-consent policy is either confirmation_required or allowed
     const categoryPolicy: "allowed" | "confirmation_required" = isSensitive
@@ -250,16 +253,29 @@ export function determineSourceEventIds(
 // 3. Scripted Belief Extractor (for deterministic test fixtures and replay)
 // ============================================================================
 
+export interface ScriptedBeliefProposal {
+  readonly subject: string;
+  readonly claim: string;
+  readonly category: BeliefCategory;
+  readonly temporalScope: BeliefTemporalScope;
+  readonly evidenceText: string;
+  readonly supportingEvidence?: readonly {
+    readonly statementEnvelopeId: string;
+    readonly evidenceText: string;
+  }[];
+  readonly confidence: number;
+}
+
 export class ScriptedBeliefExtractor implements BeliefExtractor {
   readonly #rules: ReadonlyArray<{
     readonly pattern: RegExp;
-    readonly proposals: readonly CandidateBeliefProposal[];
+    readonly proposals: readonly ScriptedBeliefProposal[];
   }>;
 
   constructor(
     rules: ReadonlyArray<{
       readonly pattern: RegExp;
-      readonly proposals: readonly CandidateBeliefProposal[];
+      readonly proposals: readonly ScriptedBeliefProposal[];
     }> = [],
   ) {
     this.#rules = rules;
@@ -273,7 +289,15 @@ export class ScriptedBeliefExtractor implements BeliefExtractor {
       if (rule.pattern.test(text)) {
         for (const prop of rule.proposals) {
           if (request.eligibleCategories.has(prop.category)) {
-            candidates.push(prop);
+            const supportingEvidence =
+              prop.supportingEvidence && prop.supportingEvidence.length > 0
+                ? prop.supportingEvidence
+                : [{ statementEnvelopeId: request.currentStatementEnvelopeId, evidenceText: prop.evidenceText }];
+
+            candidates.push({
+              ...prop,
+              supportingEvidence,
+            });
           }
         }
       }
@@ -315,7 +339,9 @@ export interface OnboardingTurnState {
   readonly statementEnvelopeId?: string;
   readonly rawStatementText?: string;
   readonly isStatementProcessed?: boolean;
-  readonly extractionSnapshot?: readonly CandidateBeliefProposal[];
+  readonly extractionSnapshot?: readonly ValidatedCandidateProposal[];
+  readonly expectedBeliefIds?: readonly string[];
+  readonly policyVersion?: string;
 }
 
 export interface OnboardingSessionState {
@@ -427,16 +453,24 @@ function foldStatementProcessed(
   state: OnboardingState,
   event: UserStatementProcessedEvent,
 ): OnboardingState {
-  const { sessionId, questionId, extractionResult } = event.payload;
+  const { sessionId, questionId, extractionResult, proposedBeliefIds, policyVersion } = event.payload;
   const session = state.sessions.get(sessionId);
   if (!session) return state;
 
+  const expectedBeliefIds = proposedBeliefIds ?? [];
+
   const updatedTurns = session.turns.map((turn) => {
     if (turn.questionId === questionId) {
+      const allMaterialized =
+        expectedBeliefIds.length === 0 ||
+        expectedBeliefIds.every((id) => session.beliefs.has(id));
+
       return {
         ...turn,
-        isStatementProcessed: true,
+        isStatementProcessed: allMaterialized,
         extractionSnapshot: extractionResult,
+        expectedBeliefIds,
+        policyVersion,
       };
     }
     return turn;
@@ -495,8 +529,22 @@ function foldBeliefProposed(
   const beliefs = new Map(session.beliefs);
   beliefs.set(beliefId, newBelief);
 
+  const updatedTurns = session.turns.map((turn) => {
+    if (turn.expectedBeliefIds && turn.expectedBeliefIds.length > 0) {
+      const allMaterialized = turn.expectedBeliefIds.every((id) => beliefs.has(id));
+      if (allMaterialized !== turn.isStatementProcessed) {
+        return {
+          ...turn,
+          isStatementProcessed: allMaterialized,
+        };
+      }
+    }
+    return turn;
+  });
+
   const updatedSession: OnboardingSessionState = {
     ...session,
+    turns: updatedTurns,
     beliefs,
   };
 
@@ -802,14 +850,21 @@ export const onboardingProjection: Projection<OnboardingState> = {
 // 5. Onboarding Summary Formatter
 // ============================================================================
 
+export function cleanClaimText(claimText: string): string {
+  const trimmed = claimText.trim();
+  const suffix = "is top value";
+  if (trimmed.toLowerCase().endsWith(suffix)) {
+    return trimmed.slice(0, trimmed.length - suffix.length).trimEnd();
+  }
+  return trimmed;
+}
+
 export function formatBaselineSummary(
   beliefs: readonly OnboardingBeliefState[],
 ): readonly string[] {
   const confirmed = beliefs.filter((b) => b.status === "confirmed");
   return confirmed.map((b) => {
-    const claimText = b.claim.trim();
-    // Normalize claim so suffix phrases like "is top value" don't create double copulas ("is top value is central")
-    const cleanClaim = claimText.replace(/\s+is\s+top\s+value$/i, "");
+    const cleanClaim = cleanClaimText(b.claim);
 
     switch (b.category) {
       case "values":
@@ -984,9 +1039,23 @@ export class OnboardingEngine {
     const statementEnvelopeId = currentTurn.statementEnvelopeId!;
     const persistedRawText = currentTurn.rawStatementText!;
 
-    // Step 3: Ensure extraction snapshot is persisted in UserStatementProcessed event
-    if (!currentTurn.isStatementProcessed || !currentTurn.extractionSnapshot) {
-      let candidates: readonly CandidateBeliefProposal[] = [];
+    // Step 3: Check completion boundary
+    if (currentTurn.isStatementProcessed) {
+      const existingProposals = Array.from(sessionAfterStmt.beliefs.values()).filter(
+        (b) => b.statementEnvelopeId === statementEnvelopeId,
+      );
+      return {
+        statementId,
+        statementEnvelopeId,
+        proposedBeliefs: existingProposals,
+      };
+    }
+
+    // Step 4: Ensure durable post-policy extraction snapshot & expected belief IDs are persisted in UserStatementProcessed
+    if (!currentTurn.extractionSnapshot) {
+      const validatedProposals: ValidatedCandidateProposal[] = [];
+      const expectedBeliefIds: string[] = [];
+
       if (this.#policyGate.isExtractionAllowed(persistedRawText)) {
         const priorTurns: ExtractionTurn[] = sessionAfterStmt.turns
           .filter((t) => t.questionId !== questionId && t.statementEnvelopeId && t.rawStatementText)
@@ -1006,7 +1075,33 @@ export class OnboardingEngine {
           eligibleCategories,
         };
 
-        candidates = await this.#extractor.extractCandidates(extractionRequest);
+        const rawCandidates = await this.#extractor.extractCandidates(extractionRequest);
+
+        for (let i = 0; i < rawCandidates.length; i++) {
+          const candidate = rawCandidates[i]!;
+          const validation = this.#policyGate.validateCandidate(candidate, extractionRequest);
+
+          if (!validation.valid || !validation.categoryPolicy || !validation.sourceEventIds) {
+            continue;
+          }
+
+          const candidateHash = candidate.claim.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 30);
+          const beliefId = `belief_${sessionId}_${statementId}_${i}_${candidateHash}`;
+
+          validatedProposals.push({
+            subject: candidate.subject,
+            claim: candidate.claim,
+            category: candidate.category,
+            temporalScope: candidate.temporalScope,
+            evidenceText: candidate.evidenceText,
+            supportingEvidence: candidate.supportingEvidence,
+            confidence: candidate.confidence,
+            categoryPolicy: validation.categoryPolicy,
+            sourceEventIds: validation.sourceEventIds,
+          });
+
+          expectedBeliefIds.push(beliefId);
+        }
       }
 
       await this.#runtime.recordExclusive(() => {
@@ -1017,7 +1112,7 @@ export class OnboardingEngine {
         const t = sess.turns.find((turn) => turn.questionId === questionId);
         if (!t || t.statementEnvelopeId !== statementEnvelopeId) return null;
 
-        if (t.isStatementProcessed && t.extractionSnapshot) return null;
+        if (t.extractionSnapshot) return null;
 
         const processedEvent = makeEvent({
           id: `evt_stmt_proc_${statementId}`,
@@ -1029,8 +1124,9 @@ export class OnboardingEngine {
             statementEnvelopeId,
             sessionId,
             questionId,
-            extractionResult: candidates,
-            proposedBeliefIds: [],
+            extractionResult: validatedProposals,
+            proposedBeliefIds: expectedBeliefIds,
+            policyVersion: this.#policyGate.policyVersion,
             processedAt: occurredAt,
           },
         });
@@ -1038,41 +1134,18 @@ export class OnboardingEngine {
       });
     }
 
-    // Step 4: Re-read state to get the durable extraction snapshot
+    // Step 5: Re-read state to get the durable extraction snapshot & expected belief IDs
     const stateWithSnapshot = this.#getProjectionState();
     const sessionWithSnapshot = stateWithSnapshot.sessions.get(sessionId)!;
     const turnWithSnapshot = sessionWithSnapshot.turns.find((t) => t.questionId === questionId)!;
 
-    const priorTurns: ExtractionTurn[] = sessionWithSnapshot.turns
-      .filter((t) => t.questionId !== questionId && t.statementEnvelopeId && t.rawStatementText)
-      .map((t) => ({
-        question: t.questionText,
-        statement: t.rawStatementText!,
-        statementEnvelopeId: t.statementEnvelopeId!,
-      }));
-
-    const extractionRequest: ExtractionRequest = {
-      currentQuestion: turnWithSnapshot.questionText,
-      currentStatement: persistedRawText,
-      currentStatementEnvelopeId: statementEnvelopeId,
-      priorTurns,
-      eligibleCategories: this.#policyGate.getEligibleCategories(),
-    };
-
     const effectiveCandidates = turnWithSnapshot.extractionSnapshot ?? [];
-    const recordedBeliefIds: string[] = [];
+    const expectedBeliefIds = turnWithSnapshot.expectedBeliefIds ?? [];
 
-    // Step 5: Record individual UserBeliefProposed events based on the persisted extraction snapshot
+    // Step 6: Materialize individual UserBeliefProposed events based on the persisted extraction snapshot
     for (let i = 0; i < effectiveCandidates.length; i++) {
       const candidate = effectiveCandidates[i]!;
-      const validation = this.#policyGate.validateCandidate(candidate, extractionRequest);
-
-      if (!validation.valid || !validation.categoryPolicy || !validation.sourceEventIds) {
-        continue;
-      }
-
-      const candidateHash = candidate.claim.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 30);
-      const beliefId = `belief_${sessionId}_${statementId}_${i}_${candidateHash}`;
+      const beliefId = expectedBeliefIds[i]!;
 
       await this.#runtime.recordExclusive(() => {
         const s = this.#getProjectionState();
@@ -1101,9 +1174,9 @@ export class OnboardingEngine {
             origin: "user_statement",
             derivation: "ai_assisted_inference",
             verification: "unconfirmed",
-            sourceEventIds: validation.sourceEventIds!,
+            sourceEventIds: candidate.sourceEventIds,
             confidence: candidate.confidence,
-            categoryPolicy: validation.categoryPolicy,
+            categoryPolicy: candidate.categoryPolicy,
             inferenceMechanism: "v0.1",
             promptSchemaVersion: "v0.1",
             validFrom: occurredAt,
@@ -1112,8 +1185,6 @@ export class OnboardingEngine {
         });
         return proposedEvent;
       });
-
-      recordedBeliefIds.push(beliefId);
     }
 
     const finalState = this.#getProjectionState();
@@ -1474,6 +1545,15 @@ export class OnboardingEngine {
       throw new Error(`Cannot establish baseline on session in status '${session.status}'`);
     }
 
+    const unmaterializedTurn = session.turns.find(
+      (t) => t.statementId != null && !t.isStatementProcessed,
+    );
+    if (unmaterializedTurn) {
+      throw new Error(
+        `Cannot establish baseline: session has unmaterialized statement results for turn ${unmaterializedTurn.questionId}`,
+      );
+    }
+
     let summary: readonly string[] = [];
     let confirmedBeliefIds: readonly string[] = [];
 
@@ -1481,6 +1561,9 @@ export class OnboardingEngine {
       const s = this.#getProjectionState();
       const sess = s.sessions.get(sessionId);
       if (!sess || sess.status !== "active" || sess.isBaselineEstablished) return null;
+
+      const unmat = sess.turns.find((t) => t.statementId != null && !t.isStatementProcessed);
+      if (unmat) return null;
 
       const confirmedBeliefs = Array.from(sess.beliefs.values()).filter(
         (b) => b.status === "confirmed",

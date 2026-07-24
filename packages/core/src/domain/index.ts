@@ -318,11 +318,26 @@ export interface CandidateBeliefProposal {
   readonly category: BeliefCategory;
   readonly temporalScope: BeliefTemporalScope;
   readonly evidenceText: string;
-  readonly supportingEvidence?: readonly {
+  readonly supportingEvidence: readonly {
     readonly statementEnvelopeId: string;
     readonly evidenceText: string;
   }[];
   readonly confidence: number;
+}
+
+export interface ValidatedCandidateProposal {
+  readonly subject: string;
+  readonly claim: string;
+  readonly category: BeliefCategory;
+  readonly temporalScope: BeliefTemporalScope;
+  readonly evidenceText: string;
+  readonly supportingEvidence: readonly {
+    readonly statementEnvelopeId: string;
+    readonly evidenceText: string;
+  }[];
+  readonly confidence: number;
+  readonly categoryPolicy: "allowed" | "confirmation_required";
+  readonly sourceEventIds: readonly string[];
 }
 
 export interface UserOnboardingStartedPayload {
@@ -353,8 +368,9 @@ export interface UserStatementProcessedPayload {
   readonly statementEnvelopeId: string;
   readonly sessionId: string;
   readonly questionId: string;
-  readonly extractionResult: readonly CandidateBeliefProposal[];
+  readonly extractionResult: readonly ValidatedCandidateProposal[];
   readonly proposedBeliefIds: readonly string[];
+  readonly policyVersion: string;
   readonly processedAt: string;
 }
 

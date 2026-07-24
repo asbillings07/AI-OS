@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { InProcessEventBus } from "../bus/index.js";
+import { EventTypes } from "../domain/index.js";
+import { makeEvent } from "../events/index.js";
 import { ProjectionHost } from "../projection/index.js";
 import { OrionRuntime } from "../runtime/index.js";
 import { SqliteEventStore } from "../store/index.js";
@@ -7,7 +9,9 @@ import {
   DeterministicPolicyGate,
   OnboardingEngine,
   ScriptedBeliefExtractor,
+  cleanClaimText,
   determineSourceEventIds,
+  formatBaselineSummary,
   onboardingProjection,
   type BeliefExtractor,
   type CandidateBeliefProposal,
@@ -369,6 +373,9 @@ describe("Natural-language onboarding baseline (#70)", () => {
               category: "routines",
               temporalScope: "current",
               evidenceText: "daily routine",
+              supportingEvidence: [
+                { statementEnvelopeId: request.currentStatementEnvelopeId, evidenceText: "daily routine" },
+              ],
               confidence: 0.9,
             },
           ];
@@ -466,6 +473,9 @@ describe("Natural-language onboarding baseline (#70)", () => {
               category: "goals",
               temporalScope: "current",
               evidenceText: "writing code",
+              supportingEvidence: [
+                { statementEnvelopeId: request.currentStatementEnvelopeId, evidenceText: "writing code" },
+              ],
               confidence: 0.9,
             },
           ];
@@ -699,6 +709,9 @@ describe("Natural-language onboarding baseline (#70)", () => {
                 category: "routines",
                 temporalScope: "current",
                 evidenceText: "working out daily",
+                supportingEvidence: [
+                  { statementEnvelopeId: request.currentStatementEnvelopeId, evidenceText: "working out daily" },
+                ],
                 confidence: 0.8,
               },
             ];
@@ -711,6 +724,9 @@ describe("Natural-language onboarding baseline (#70)", () => {
               category: "routines",
               temporalScope: "current",
               evidenceText: "working out daily",
+              supportingEvidence: [
+                { statementEnvelopeId: request.currentStatementEnvelopeId, evidenceText: "working out daily" },
+              ],
               confidence: 0.8,
             },
           ];
@@ -759,5 +775,338 @@ describe("Natural-language onboarding baseline (#70)", () => {
     } finally {
       store.close();
     }
+  });
+
+  it("Item 1: Durable snapshot persists ONLY post-policy validated candidates", async () => {
+    const store = new SqliteEventStore(":memory:");
+    try {
+      const bus = new InProcessEventBus();
+      const host = new ProjectionHost(onboardingProjection);
+      const runtime = new OrionRuntime({
+        bus,
+        store,
+        projections: [host as ProjectionHost<unknown>],
+      });
+
+      // Policy gate: opt-in required for values, no consent granted
+      const policyGate = new DeterministicPolicyGate({
+        optInCategories: new Set(["values"]),
+        grantedConsentCategories: new Set([]),
+      });
+
+      // Extractor ignores eligibleCategories and attempts to return unconsented opt-in candidate + prohibited topic candidate + valid candidate
+      const rogueExtractor: BeliefExtractor = {
+        async extractCandidates(request: ExtractionRequest) {
+          return [
+            {
+              subject: "unconsented_value",
+              claim: "Family well-being",
+              category: "values",
+              temporalScope: "durable",
+              evidenceText: "family focus",
+              supportingEvidence: [
+                { statementEnvelopeId: request.currentStatementEnvelopeId, evidenceText: "family focus" },
+              ],
+              confidence: 0.9,
+            },
+            {
+              subject: "career",
+              claim: "Building software business",
+              category: "goals",
+              temporalScope: "current",
+              evidenceText: "building software",
+              supportingEvidence: [
+                { statementEnvelopeId: request.currentStatementEnvelopeId, evidenceText: "building software" },
+              ],
+              confidence: 0.95,
+            },
+          ];
+        },
+      };
+
+      const engine = new OnboardingEngine({
+        runtime,
+        extractor: rogueExtractor,
+        policyGate,
+        getProjectionState: () => host.state,
+      });
+
+      const { sessionId, questionId } = await engine.startSession({
+        sessionId: "sess_policy_snap_1",
+        now: NOW,
+      });
+
+      const res = await engine.recordStatement({
+        sessionId,
+        questionId,
+        rawText: "I am building software with family focus.",
+        now: NOW,
+      });
+
+      // Only the valid post-policy candidate was proposed!
+      expect(res.proposedBeliefs).toHaveLength(1);
+      expect(res.proposedBeliefs[0]!.subject).toBe("career");
+
+      // Verify that extraction snapshot in event log contains ONLY post-policy candidates!
+      const sessionState = host.state.sessions.get(sessionId)!;
+      const turn = sessionState.turns.find((t) => t.questionId === questionId)!;
+      expect(turn.extractionSnapshot).toHaveLength(1);
+      expect(turn.extractionSnapshot![0]!.subject).toBe("career");
+      expect(turn.extractionSnapshot![0]!.categoryPolicy).toBe("allowed");
+      expect(turn.policyVersion).toBe("v0.1");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("Item 2: establishBaseline rejects unmaterialized statement results & failure-between-proposals is retryable", async () => {
+    const store = new SqliteEventStore(":memory:");
+    try {
+      const bus = new InProcessEventBus();
+      const host = new ProjectionHost(onboardingProjection);
+      const runtime = new OrionRuntime({
+        bus,
+        store,
+        projections: [host as ProjectionHost<unknown>],
+      });
+
+      const multiProposalExtractor: BeliefExtractor = {
+        async extractCandidates(request: ExtractionRequest) {
+          return [
+            {
+              subject: "family",
+              claim: "Family well-being",
+              category: "values",
+              temporalScope: "durable",
+              evidenceText: "family",
+              supportingEvidence: [
+                { statementEnvelopeId: request.currentStatementEnvelopeId, evidenceText: "family" },
+              ],
+              confidence: 0.9,
+            },
+            {
+              subject: "career",
+              claim: "Career growth",
+              category: "goals",
+              temporalScope: "current",
+              evidenceText: "career",
+              supportingEvidence: [
+                { statementEnvelopeId: request.currentStatementEnvelopeId, evidenceText: "career" },
+              ],
+              confidence: 0.9,
+            },
+          ];
+        },
+      };
+
+      const engine = new OnboardingEngine({
+        runtime,
+        extractor: multiProposalExtractor,
+        getProjectionState: () => host.state,
+      });
+
+      const { sessionId, questionId } = await engine.startSession({
+        sessionId: "sess_materialize_1",
+        now: NOW,
+      });
+
+      const statementId = `stmt_${sessionId}_${questionId}`;
+      const statementEnvelopeId = `evt_stmt_${statementId}`;
+      const rawText = "My family and career matter.";
+
+      // Record statement event
+      await runtime.record(
+        makeEvent({
+          id: statementEnvelopeId,
+          type: EventTypes.UserStatementRecorded,
+          source: "orion",
+          occurredAt: NOW,
+          payload: {
+            statementId,
+            sessionId,
+            questionId,
+            rawText,
+            recordedAt: NOW,
+          },
+        }),
+      );
+
+      const candidate1 = {
+        subject: "family",
+        claim: "Family well-being",
+        category: "values" as const,
+        temporalScope: "durable" as const,
+        evidenceText: "family",
+        supportingEvidence: [{ statementEnvelopeId, evidenceText: "family" }],
+        confidence: 0.9,
+        categoryPolicy: "allowed" as const,
+        sourceEventIds: [statementEnvelopeId],
+      };
+
+      const candidate2 = {
+        subject: "career",
+        claim: "Career growth",
+        category: "goals" as const,
+        temporalScope: "current" as const,
+        evidenceText: "career",
+        supportingEvidence: [{ statementEnvelopeId, evidenceText: "career" }],
+        confidence: 0.9,
+        categoryPolicy: "allowed" as const,
+        sourceEventIds: [statementEnvelopeId],
+      };
+
+      const belief1Id = `belief_${sessionId}_${statementId}_0_family_well_being`;
+      const belief2Id = `belief_${sessionId}_${statementId}_1_career_growth`;
+
+      // Record UserStatementProcessed event with 2 expected belief IDs
+      await runtime.record(
+        makeEvent({
+          id: `evt_stmt_proc_${statementId}`,
+          type: EventTypes.UserStatementProcessed,
+          source: "orion",
+          occurredAt: NOW,
+          payload: {
+            statementId,
+            statementEnvelopeId,
+            sessionId,
+            questionId,
+            extractionResult: [candidate1, candidate2],
+            proposedBeliefIds: [belief1Id, belief2Id],
+            policyVersion: "v0.1",
+            processedAt: NOW,
+          },
+        }),
+      );
+
+      // Record ONLY proposal 1 event (simulating crash before proposal 2)
+      await runtime.record(
+        makeEvent({
+          id: `evt_prop_${belief1Id}`,
+          type: EventTypes.UserBeliefProposed,
+          source: "orion",
+          occurredAt: NOW,
+          payload: {
+            beliefId: belief1Id,
+            sessionId,
+            statementEnvelopeId,
+            subject: candidate1.subject,
+            claim: candidate1.claim,
+            category: candidate1.category,
+            temporalScope: candidate1.temporalScope,
+            evidenceText: candidate1.evidenceText,
+            origin: "user_statement",
+            derivation: "ai_assisted_inference",
+            verification: "unconfirmed",
+            sourceEventIds: candidate1.sourceEventIds,
+            confidence: candidate1.confidence,
+            categoryPolicy: candidate1.categoryPolicy,
+            inferenceMechanism: "v0.1",
+            promptSchemaVersion: "v0.1",
+            validFrom: NOW,
+            proposedAt: NOW,
+          },
+        }),
+      );
+
+      // Verify turn.isStatementProcessed is FALSE because proposal 2 is unmaterialized
+      expect(host.state.sessions.get(sessionId)!.turns[0]!.isStatementProcessed).toBe(false);
+
+      // 1. establishBaseline MUST REJECT because proposal 2 is unmaterialized!
+      await expect(
+        engine.establishBaseline({ sessionId, now: NOW }),
+      ).rejects.toThrow(/unmaterialized statement results/i);
+
+      // 2. Retry recordStatement completes proposal 2 without re-running extraction
+      const retryRes = await engine.recordStatement({
+        sessionId,
+        questionId,
+        rawText,
+        now: NOW,
+      });
+
+      expect(retryRes.proposedBeliefs).toHaveLength(2);
+      expect(host.state.sessions.get(sessionId)!.turns[0]!.isStatementProcessed).toBe(true);
+
+      // 3. Confirm beliefs and establish baseline now succeeds
+      await engine.confirmBelief({ sessionId, beliefId: retryRes.proposedBeliefs[0]!.beliefId, now: NOW });
+      await engine.confirmBelief({ sessionId, beliefId: retryRes.proposedBeliefs[1]!.beliefId, now: NOW });
+
+      const baseline = await engine.establishBaseline({ sessionId, now: NOW });
+      expect(baseline.summary).toHaveLength(2);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("Item 3: Requires non-empty supportingEvidence & validates top-level evidenceText match", async () => {
+    const policyGate = new DeterministicPolicyGate();
+    const request: ExtractionRequest = {
+      currentQuestion: "What matters to you?",
+      currentStatement: "Family is central to my daily life.",
+      currentStatementEnvelopeId: "evt_stmt_100",
+      priorTurns: [],
+      eligibleCategories: policyGate.getEligibleCategories(),
+    };
+
+    // A. Missing / empty supportingEvidence -> rejected
+    const candidateNoEvidence = {
+      subject: "family",
+      claim: "Family focus",
+      category: "values" as const,
+      temporalScope: "durable" as const,
+      evidenceText: "Family",
+      supportingEvidence: [],
+      confidence: 0.9,
+    };
+    expect(policyGate.validateCandidate(candidateNoEvidence, request).valid).toBe(false);
+
+    // B. Top-level evidenceText does not contain referenced evidence span -> rejected
+    const candidateMismatchText = {
+      subject: "family",
+      claim: "Family focus",
+      category: "values" as const,
+      temporalScope: "durable" as const,
+      evidenceText: "Unsupported top-level text",
+      supportingEvidence: [{ statementEnvelopeId: "evt_stmt_100", evidenceText: "Family" }],
+      confidence: 0.9,
+    };
+    expect(policyGate.validateCandidate(candidateMismatchText, request).valid).toBe(false);
+
+    // C. supportingEvidence text not in statement -> rejected
+    const candidateWrongSpan = {
+      subject: "family",
+      claim: "Family focus",
+      category: "values" as const,
+      temporalScope: "durable" as const,
+      evidenceText: "completely absent span",
+      supportingEvidence: [{ statementEnvelopeId: "evt_stmt_100", evidenceText: "completely absent span" }],
+      confidence: 0.9,
+    };
+    expect(policyGate.validateCandidate(candidateWrongSpan, request).valid).toBe(false);
+
+    // D. Valid matching explicit supportingEvidence -> accepted
+    const candidateValid = {
+      subject: "family",
+      claim: "Family focus",
+      category: "values" as const,
+      temporalScope: "durable" as const,
+      evidenceText: "Family is central",
+      supportingEvidence: [{ statementEnvelopeId: "evt_stmt_100", evidenceText: "Family is central" }],
+      confidence: 0.9,
+    };
+    const validRes = policyGate.validateCandidate(candidateValid, request);
+    expect(validRes.valid).toBe(true);
+    expect(validRes.sourceEventIds).toEqual(["evt_stmt_100"]);
+  });
+
+  it("Item 4: Non-backtracking claim normalization handles adversarial trailing whitespace efficiently", () => {
+    const claimWithAdversarialSpaces = "Family well-being is top value" + " ".repeat(50000);
+
+    const start = performance.now();
+    const cleaned = cleanClaimText(claimWithAdversarialSpaces);
+    const duration = performance.now() - start;
+
+    expect(cleaned).toBe("Family well-being");
+    expect(duration).toBeLessThan(50);
   });
 });
