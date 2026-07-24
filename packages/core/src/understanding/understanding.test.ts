@@ -528,6 +528,17 @@ describe("Signal detection (deterministic)", () => {
       }),
     ]);
     expect(detectSignals(c4, "2026-07-15T12:00:00.000Z").map((s) => s.kind)).toContain("Invitation");
+
+    // 5. "Event proposal accepted. Please RSVP for the kickoff." -> Invitation
+    const c5 = fold([
+      message({
+        threadId: "t5",
+        messageId: "m5",
+        subject: "Event proposal status",
+        body: "Event proposal accepted. Please RSVP for the kickoff.",
+      }),
+    ]);
+    expect(detectSignals(c5, "2026-07-15T12:00:00.000Z").map((s) => s.kind)).toContain("Invitation");
   });
 
   it("clears earlier invitation when a later message in the active turn cancels or declines it (#88)", () => {
