@@ -62,6 +62,23 @@ export interface BeliefExtractor {
 // 2. Two-Stage Deterministic Policy Gate
 // ============================================================================
 
+function getClauseSurroundingSpan(targetText: string, refText: string): string {
+  const refIdx = targetText.indexOf(refText);
+  if (refIdx < 0) return refText;
+
+  let start = refIdx;
+  while (start > 0 && !/[,;:.!?]/.test(targetText[start - 1]!)) {
+    start--;
+  }
+
+  let end = refIdx + refText.length;
+  while (end < targetText.length && !/[,;:.!?]/.test(targetText[end]!)) {
+    end++;
+  }
+
+  return targetText.slice(start, end).trim();
+}
+
 const SENSITIVE_TOPIC_PATTERN =
   /\b(health|medical|doctor|illness|diagnosis|treatment|medication|cancer|diabetes|therapy|financial|income|salary|debt|mortgage|bank|tax|political|election|vote|party|religion|church|faith|family|children|child|kid|kids|spouse|partner|marriage|marital)\b/i;
 
@@ -69,33 +86,69 @@ const FIRST_PERSON_PRONOUN_PATTERN =
   /\b(I|me|myself|mine|my|my own|I'm|I've|I'll|I'd|we|us|our|ours)\b/i;
 
 function isSelfAttributedSensitiveSpan(span: string): boolean {
-  const myNounMatches = span.matchAll(/\b(?:my|our)\s+([a-z0-9_]+)/gi);
-  for (const match of myNounMatches) {
-    const noun = match[1]!.toLowerCase();
-    if (!SENSITIVE_TOPIC_PATTERN.test(noun) && !FIRST_PERSON_PRONOUN_PATTERN.test(noun)) {
-      return false;
-    }
+  // Fail closed Rule 1: The evidence span MUST contain at least one positive first-person pronoun.
+  if (!FIRST_PERSON_PRONOUN_PATTERN.test(span)) {
+    return false;
   }
 
-  const apostropheMatches = span.matchAll(/\b([a-z0-9_]+)'s\b/gi);
-  for (const match of apostropheMatches) {
-    const owner = match[1]!.toLowerCase();
-    if (!FIRST_PERSON_PRONOUN_PATTERN.test(owner) && !SENSITIVE_TOPIC_PATTERN.test(owner)) {
-      return false;
-    }
+  // Find all sensitive topic keywords in the span.
+  const sensitiveMatches = Array.from(span.matchAll(new RegExp(SENSITIVE_TOPIC_PATTERN.source, "gi")));
+  if (sensitiveMatches.length === 0) {
+    return true;
   }
 
-  const subjectVerbMatches = span.matchAll(
-    /\b([a-z0-9_]+)\s+(has|is|was|had|suffers|suffering|diagnosed|contracted|underwent)\b/gi,
-  );
-  for (const match of subjectVerbMatches) {
-    const subject = match[1]!.toLowerCase();
-    const isFirstPerson = FIRST_PERSON_PRONOUN_PATTERN.test(subject);
-    const isSensitiveTopic = SENSITIVE_TOPIC_PATTERN.test(subject);
-    const isCommonAuxiliary = /^(this|that|it|which|who|what)\b/i.test(subject);
+  for (const match of sensitiveMatches) {
+    const matchIndex = match.index ?? 0;
+    const matchWord = match[0]!;
 
-    if (!isFirstPerson && !isSensitiveTopic && !isCommonAuxiliary) {
+    // Extract a local window around the sensitive keyword (~50 chars before and after)
+    const windowStart = Math.max(0, matchIndex - 50);
+    const windowEnd = Math.min(span.length, matchIndex + matchWord.length + 50);
+    const localWindow = span.slice(windowStart, windowEnd);
+
+    // Fail closed Rule 2a: The local window around the sensitive topic MUST contain a first-person reference.
+    if (!FIRST_PERSON_PRONOUN_PATTERN.test(localWindow)) {
       return false;
+    }
+
+    // Fail closed Rule 2b: Check if the local window attributes the sensitive topic to a third party or named person.
+    // i) Third-party possessive/noun (e.g. "my friend", "our manager", "my spouse", "my doctor")
+    if (
+      /\b(?:my|our)\s+(?:[a-z0-9_]+\s+)?(friend|friends|manager|boss|colleague|colleagues|coworker|coworkers|mother|father|parent|parents|sister|sisters|brother|brothers|daughter|daughters|son|sons|spouse|partner|wife|husband|cousin|cousins|aunt|uncle|neighbor|neighbors|patient|patients|someone|somebody|doctor|doctors|physician)\b/i.test(
+        localWindow,
+      )
+    ) {
+      // Exception: "my doctor diagnosed me with..." where first-person is the direct object
+      const isDiagnosedMe = /\b(?:diagnosed|treated)\s+(?:me|us)\b/i.test(localWindow);
+      if (!isDiagnosedMe) {
+        return false;
+      }
+    }
+
+    // ii) Third-party subject governing/near the sensitive topic (e.g. "Sam has...", "Doctor diagnosed...", "Cancer affects...")
+    const thirdPartySubjectMatch = localWindow.match(
+      /\b([a-z0-9_]+)\s+(has|is|was|had|suffers|suffering|diagnosed|affects|contracted|underwent)\b/i,
+    );
+    if (thirdPartySubjectMatch) {
+      const subject = thirdPartySubjectMatch[1]!.toLowerCase();
+      const isFirstPerson = FIRST_PERSON_PRONOUN_PATTERN.test(subject);
+      const isSensitiveTopicSelf = SENSITIVE_TOPIC_PATTERN.test(subject);
+      const isCommonGrammar = /^(this|that|it|which|who|what|protecting|family)\b/i.test(subject);
+
+      if (!isFirstPerson && !isSensitiveTopicSelf && !isCommonGrammar) {
+        return false;
+      }
+    }
+
+    // iii) Verb followed by third party near sensitive topic (e.g. "diagnosed Sam", "affects Sam")
+    const verbThirdPartyMatch = localWindow.match(
+      /\b(diagnosed|affects|suffers|treated|helps)\s+([a-z0-9_]+)\b/i,
+    );
+    if (verbThirdPartyMatch) {
+      const target = verbThirdPartyMatch[2]!.toLowerCase();
+      if (!FIRST_PERSON_PRONOUN_PATTERN.test(target)) {
+        return false;
+      }
     }
   }
 
@@ -246,9 +299,21 @@ export class DeterministicPolicyGate {
     // Every verified evidence span supporting a sensitive claim must be structurally self-attributed to the user.
     // Evidence spans with third-party subjects (e.g., "Sam has cancer", "My friend has cancer") cannot authorize sensitive claims.
     if (claimIsSensitive) {
-      const allSpans = [candidate.evidenceText, ...candidate.supportingEvidence.map((s) => s.evidenceText)];
-      for (const span of allSpans) {
-        if (!isSelfAttributedSensitiveSpan(span)) {
+      for (const ref of candidate.supportingEvidence) {
+        const refText = ref.evidenceText.trim();
+        let targetStatementText = "";
+        if (ref.statementEnvelopeId === request.currentStatementEnvelopeId) {
+          targetStatementText = request.currentStatement;
+        } else {
+          const matchingTurn = request.priorTurns.find(
+            (t) => t.statementEnvelopeId === ref.statementEnvelopeId,
+          );
+          if (matchingTurn) targetStatementText = matchingTurn.statement;
+        }
+
+        const clause = getClauseSurroundingSpan(targetStatementText, refText);
+
+        if (!isSelfAttributedSensitiveSpan(clause) && !isSelfAttributedSensitiveSpan(refText)) {
           return { valid: false };
         }
       }

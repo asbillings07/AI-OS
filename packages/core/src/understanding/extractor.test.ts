@@ -731,6 +731,56 @@ describe("Candidate Belief Extraction from Natural Language (#71)", () => {
     expect(session.beliefs.size).toBe(0);
   });
 
+  it("Contract Check 9: Reject sensitive claims with unrecognized third-party grammar (e.g. 'Doctor diagnosed Sam', 'Cancer affects Sam')", async () => {
+    const store = new SqliteEventStore(":memory:");
+    const bus = new InProcessEventBus();
+    const host = new ProjectionHost(onboardingProjection);
+    const runtime = new OrionRuntime({ bus, store, projections: [host as ProjectionHost<unknown>] });
+
+    const policyGate = new DeterministicPolicyGate({
+      allowedCategories: ALL_CATEGORIES,
+    });
+
+    const ai = createMockAi(async (req) => ({
+      candidates: [
+        {
+          subject: "health",
+          claim: "I have cancer",
+          category: "values",
+          temporalScope: "durable",
+          evidenceText: "Doctor diagnosed Sam with cancer",
+          supportingEvidence: [
+            {
+              statementEnvelopeId: req.currentStatementEnvelopeId,
+              evidenceText: "Doctor diagnosed Sam with cancer",
+            },
+          ],
+          confidence: 0.95,
+        },
+      ],
+    }));
+
+    const extractor = new LlmBeliefExtractor({ ai });
+    const engine = new OnboardingEngine({
+      runtime,
+      extractor,
+      policyGate,
+      getProjectionState: () => host.state,
+    });
+
+    const { sessionId, questionId } = await engine.startSession({ sessionId: "sess_grammar_sensitive", now: NOW });
+    const { proposedBeliefs } = await engine.recordStatement({
+      sessionId,
+      questionId,
+      rawText: "Doctor diagnosed Sam with cancer.",
+      now: NOW,
+    });
+
+    expect(proposedBeliefs).toHaveLength(0);
+    const session = host.state.sessions.get(sessionId)!;
+    expect(session.beliefs.size).toBe(0);
+  });
+
   it("Acceptance Case: User correction of an earlier statement produces corrected belief candidate", async () => {
     const store = new SqliteEventStore(":memory:");
     const bus = new InProcessEventBus();
