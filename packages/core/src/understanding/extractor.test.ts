@@ -680,6 +680,57 @@ describe("Candidate Belief Extraction from Natural Language (#71)", () => {
     expect(session.beliefs.size).toBe(0);
   });
 
+  it("Contract Check 8: Reject sensitive trait claims attributed to named individuals (e.g. Sam, John) without relying on a finite noun list", async () => {
+    const store = new SqliteEventStore(":memory:");
+    const bus = new InProcessEventBus();
+    const host = new ProjectionHost(onboardingProjection);
+    const runtime = new OrionRuntime({ bus, store, projections: [host as ProjectionHost<unknown>] });
+
+    const policyGate = new DeterministicPolicyGate({
+      allowedCategories: ALL_CATEGORIES,
+    });
+
+    const ai = createMockAi(async (req) => ({
+      candidates: [
+        {
+          subject: "health",
+          claim: "I have cancer",
+          category: "values",
+          temporalScope: "durable",
+          evidenceText: "Sam has cancer",
+          supportingEvidence: [
+            {
+              statementEnvelopeId: req.currentStatementEnvelopeId,
+              evidenceText: "Sam has cancer",
+            },
+          ],
+          confidence: 0.95,
+        },
+      ],
+    }));
+
+    const extractor = new LlmBeliefExtractor({ ai });
+    const engine = new OnboardingEngine({
+      runtime,
+      extractor,
+      policyGate,
+      getProjectionState: () => host.state,
+    });
+
+    const { sessionId, questionId } = await engine.startSession({ sessionId: "sess_named_sensitive", now: NOW });
+    const { proposedBeliefs } = await engine.recordStatement({
+      sessionId,
+      questionId,
+      rawText: "Sam has cancer.",
+      now: NOW,
+    });
+
+    // The proposal must be rejected by the DeterministicPolicyGate because 'Sam' is a named third party, not the user
+    expect(proposedBeliefs).toHaveLength(0);
+    const session = host.state.sessions.get(sessionId)!;
+    expect(session.beliefs.size).toBe(0);
+  });
+
   it("Acceptance Case: User correction of an earlier statement produces corrected belief candidate", async () => {
     const store = new SqliteEventStore(":memory:");
     const bus = new InProcessEventBus();

@@ -65,11 +65,42 @@ export interface BeliefExtractor {
 const SENSITIVE_TOPIC_PATTERN =
   /\b(health|medical|doctor|illness|diagnosis|treatment|medication|cancer|diabetes|therapy|financial|income|salary|debt|mortgage|bank|tax|political|election|vote|party|religion|church|faith|family|children|child|kid|kids|spouse|partner|marriage|marital)\b/i;
 
-const THIRD_PARTY_PATTERN =
-  /\b(friend|friends|manager|boss|colleague|colleagues|coworker|coworkers|mother|father|parent|parents|sister|sisters|brother|brothers|daughter|daughters|son|sons|spouse|partner|wife|husband|cousin|cousins|aunt|uncle|neighbor|neighbors|doctor|doctors|physician|patient|patients|someone|somebody|other people|third party|he|she|they|his|her|their|him|them)\b/i;
-
 const FIRST_PERSON_PRONOUN_PATTERN =
-  /\b(I|me|myself|mine|my own|I'm|I've|I'll|I'd)\b/i;
+  /\b(I|me|myself|mine|my|my own|I'm|I've|I'll|I'd|we|us|our|ours)\b/i;
+
+function isSelfAttributedSensitiveSpan(span: string): boolean {
+  const myNounMatches = span.matchAll(/\b(?:my|our)\s+([a-z0-9_]+)/gi);
+  for (const match of myNounMatches) {
+    const noun = match[1]!.toLowerCase();
+    if (!SENSITIVE_TOPIC_PATTERN.test(noun) && !FIRST_PERSON_PRONOUN_PATTERN.test(noun)) {
+      return false;
+    }
+  }
+
+  const apostropheMatches = span.matchAll(/\b([a-z0-9_]+)'s\b/gi);
+  for (const match of apostropheMatches) {
+    const owner = match[1]!.toLowerCase();
+    if (!FIRST_PERSON_PRONOUN_PATTERN.test(owner) && !SENSITIVE_TOPIC_PATTERN.test(owner)) {
+      return false;
+    }
+  }
+
+  const subjectVerbMatches = span.matchAll(
+    /\b([a-z0-9_]+)\s+(has|is|was|had|suffers|suffering|diagnosed|contracted|underwent)\b/gi,
+  );
+  for (const match of subjectVerbMatches) {
+    const subject = match[1]!.toLowerCase();
+    const isFirstPerson = FIRST_PERSON_PRONOUN_PATTERN.test(subject);
+    const isSensitiveTopic = SENSITIVE_TOPIC_PATTERN.test(subject);
+    const isCommonAuxiliary = /^(this|that|it|which|who|what)\b/i.test(subject);
+
+    if (!isFirstPerson && !isSensitiveTopic && !isCommonAuxiliary) {
+      return false;
+    }
+  }
+
+  return true;
+}
 
 const PROHIBITED_PATTERN =
   /\b(illegal|unlawful|explicit-pornography|hate-speech)\b/i;
@@ -211,21 +242,15 @@ export class DeterministicPolicyGate {
       return { valid: false };
     }
 
-    // Third-party mention & self-attribution safety check (#71):
-    // 1. Any evidence span containing third-party subjects without first-person self-attribution is rejected.
-    // 2. Sensitive claims cannot be authorized by evidence spans that attribute the sensitive topic to a third party (e.g., "My friend has cancer" -> "I have cancer").
-    const allSpans = [candidate.evidenceText, ...candidate.supportingEvidence.map((s) => s.evidenceText)];
-
-    for (const span of allSpans) {
-      const hasThirdParty = THIRD_PARTY_PATTERN.test(span);
-      const hasFirstPerson = FIRST_PERSON_PRONOUN_PATTERN.test(span);
-
-      if (hasThirdParty && !hasFirstPerson) {
-        return { valid: false };
-      }
-
-      if (claimIsSensitive && hasThirdParty) {
-        return { valid: false };
+    // Structural self-attribution requirement for sensitive claims (#71):
+    // Every verified evidence span supporting a sensitive claim must be structurally self-attributed to the user.
+    // Evidence spans with third-party subjects (e.g., "Sam has cancer", "My friend has cancer") cannot authorize sensitive claims.
+    if (claimIsSensitive) {
+      const allSpans = [candidate.evidenceText, ...candidate.supportingEvidence.map((s) => s.evidenceText)];
+      for (const span of allSpans) {
+        if (!isSelfAttributedSensitiveSpan(span)) {
+          return { valid: false };
+        }
       }
     }
 
